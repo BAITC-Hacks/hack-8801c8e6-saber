@@ -1,0 +1,33 @@
+{
+  "budget": 100,
+  "currency": "усл. ед.",
+  "decisions_count": 5,
+  "max_per_direction": 2,
+  "horizon_quarters": 8,
+  "lambda": 0.7,
+  "crit_threshold": 40,
+  "crit_penalty": 1.0,
+  "directions": {"transport": "Транспорт", "ecology": "Экология", "social": "Соцсфера", "safety": "Безопасность", "services": "Сервисы"},
+  "indicators": [
+    {"code": "T1", "direction": "transport", "name": "Разгрузка дорог", "weight": 0.10},
+    {"code": "T2", "direction": "transport", "name": "Доступность общественного транспорта", "weight": 0.10},
+    {"code": "E1", "direction": "ecology", "name": "Озеленение", "weight": 0.09},
+    {"code": "E2", "direction": "ecology", "name": "Качество воздуха", "weight": 0.11},
+    {"code": "S1", "direction": "social", "name": "Школы и детсады", "weight": 0.11},
+    {"code": "S2", "direction": "social", "name": "Поликлиники и первичная медпомощь", "weight": 0.11},
+    {"code": "B1", "direction": "safety", "name": "Безопасность улиц", "weight": 0.09},
+    {"code": "B2", "direction": "safety", "name": "Безопасность дорожного движения", "weight": 0.09},
+    {"code": "C1", "direction": "services", "name": "Надёжность ЖКХ", "weight": 0.10},
+    {"code": "C2", "direction": "services", "name": "Скорость решения обращений жителей", "weight": 0.10}
+  ],
+  "synergies": [
+    {"pair": ["M1", "M2"], "host": "M1", "indicator": "T1", "bonus": 2},
+    {"pair": ["M10", "M12"], "host": "M10", "indicator": "B1", "bonus": 2},
+    {"pair": ["M5", "M6"], "host": "M5", "indicator": "E2", "bonus": 2}
+  ],
+  "incompatibilities": [
+    {"pair": ["M1", "M3"], "same_district_only": false, "reason": "Либо BRT, либо ЛРТ"},
+    {"pair": ["M4", "M7"], "same_district_only": true, "reason": "Конфликт за участок"},
+    {"pair": ["M5", "M13"], "same_district_only": true, "reason": "Дублирование программы"}
+  ]
+}
