@@ -189,6 +189,16 @@ def simulate(decisions: list[Decision], data: AppData, _with_contributions: bool
 
     weakest_district_id = min(d_after, key=lambda t: d_after[t]) if d_after else None
 
+    lam = data.config["lambda"]
+    penalty = data.config["crit_penalty"]
+    score_components = {}
+    for name, before, after in (
+        ("average", lam * d_avg_before, lam * d_avg),
+        ("weakest", (1 - lam) * d_min_before, (1 - lam) * d_min),
+        ("critical", -penalty * n_crit_before, -penalty * n_crit),
+    ):
+        score_components[name] = {"before": before, "after": after, "delta": after - before}
+
     districts_out = []
     for d in data.districts:
         t = d["id"]
@@ -221,6 +231,7 @@ def simulate(decisions: list[Decision], data: AppData, _with_contributions: bool
         "budget_left": budget - total_cost,
         "direction_counts": direction_counts,
         "weakest_district_id": weakest_district_id,
+        "score_components": score_components,
     }
 
 
@@ -262,6 +273,10 @@ def round_result(result: dict[str, Any]) -> dict[str, Any]:
     ]
     out["contributions"] = {k: r2(v) for k, v in result["contributions"].items()}
     out["effective_share"] = [{**e, "value": r2(e["value"])} for e in result["effective_share"]]
+    out["score_components"] = {
+        name: {key: r2(value) for key, value in component.items()}
+        for name, component in result["score_components"].items()
+    }
     out["budget_left"] = result["budget_left"]
     out["total_cost"] = result["total_cost"]
     return out

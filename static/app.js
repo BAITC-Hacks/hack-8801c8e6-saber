@@ -1,7 +1,13 @@
 (() => {
   "use strict";
 
-  const SLOT_COUNT = 5;
+  let SLOT_COUNT = 5;
+  const DRAFT_KEY = "akim-draft-v1";
+  const EXAMPLE = [
+    { measureId: "M7", districtId: "nura" }, { measureId: "M8", districtId: "nura" },
+    { measureId: "M10", districtId: "nura" }, { measureId: "M12", districtId: "" },
+    { measureId: "M5", districtId: "saryarka" },
+  ];
 
   const state = {
     config: null,
@@ -16,12 +22,60 @@
     indicatorView: "D",
     selectedTileId: null,
     leaderboard: [],
+    revision: 0,
+    pending: false,
+    previewError: false,
+    busy: {},
+    undo: [],
+    simulateController: null,
+    ready: false,
   };
 
   const el = (id) => document.getElementById(id);
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const decisionsOf = (slots) => slots.filter((s) => s.measureId).map((s) => ({ measure_id: s.measureId, district_id: s.districtId || null }));
+  const sameDecision = (a, b) => a.measure_id === b.measure_id && a.district_id === b.district_id;
+
+  function remember() {
+    state.undo.push(state.slots.map((s) => ({ ...s })));
+    if (state.undo.length > 20) state.undo.shift();
+  }
+
+  function saveDraft() {
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ slots: state.slots, team: el("team-input").value }));
+      el("draft-status").textContent = "Черновик сохранён в этом браузере";
+    } catch {
+      el("draft-status").textContent = "Автосохранение недоступно в этом браузере";
+    }
+  }
+
+  function restoreDraft() {
+    try {
+      const draft = JSON.parse(localStorage.getItem(DRAFT_KEY));
+      if (!draft || !Array.isArray(draft.slots) || draft.slots.length !== SLOT_COUNT) return;
+      if (!draft.slots.every((s) => s && typeof s.measureId === "string" && typeof s.districtId === "string" &&
+        (!s.measureId || state.measuresById[s.measureId]) && (!s.districtId || state.districtsById[s.districtId]))) return;
+      state.slots = draft.slots.map((s) => ({ measureId: s.measureId, districtId: s.districtId, locked: s.locked === true && completeSlot(s) }));
+      if (typeof draft.team === "string") el("team-input").value = draft.team.slice(0, 40);
+      el("draft-status").textContent = "Черновик восстановлен";
+    } catch { /* Ignore an unavailable or obsolete local draft. */ }
+  }
+
+  function completeSlot(s) {
+    const m = state.measuresById[s.measureId];
+    return Boolean(m && (m.scope === "city" || state.districtsById[s.districtId]));
+  }
+
+  function decisionLabel(d) {
+    const m = state.measuresById[d.measure_id];
+    const district = state.districtsById[d.district_id];
+    return `${m ? m.name : d.measure_id}${district ? " · " + district.name : " · весь город"}`;
+  }
 
   function fmt2(n) {
     if (n === null || n === undefined || Number.isNaN(n)) return "—";
+    if (Object.is(n, -0)) n = 0;
     return n.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
@@ -30,11 +84,12 @@
     return sign + fmt2(n);
   }
 
-  async function api(path, method, body) {
+  async function api(path, method, body, signal) {
     const res = await fetch(path, {
       method: method || "GET",
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
+      signal,
     });
     let json;
     try {
@@ -239,18 +294,20 @@
       const slot = state.slots[i];
       const measure = state.measuresById[slot.measureId];
       const wrap = document.createElement("div");
-      wrap.className = "slot";
+      wrap.className = `slot${slot.locked ? " slot-locked" : ""}`;
 
       const isCity = measure && measure.scope === "city";
       const isDistrict = measure && measure.scope === "district";
 
       wrap.innerHTML = `
-        <div class="slot-title">Решение ${i + 1}</div>
-        <select data-role="measure" data-slot="${i}">${buildMeasureOptionsHtml(i)}</select>
+        <div class="slot-title">Решение ${i + 1}
+          <label class="lock-control"><input type="checkbox" data-role="lock" data-slot="${i}" ${slot.locked ? "checked" : ""} ${completeSlot(slot) ? "" : "disabled"} aria-label="Закрепить решение ${i + 1}"> Закрепить</label>
+        </div>
+        <select aria-label="Мера ${i + 1}" data-role="measure" data-slot="${i}" ${slot.locked ? "disabled" : ""}>${buildMeasureOptionsHtml(i)}</select>
         ${
           isCity
             ? `<div class="slot-district-static">Весь город</div>`
-            : `<select data-role="district" data-slot="${i}" ${isDistrict ? "" : "disabled"} ${isDistrict ? "" : 'style="visibility:hidden"'}>${buildDistrictOptionsHtml(i, slot.measureId)}</select>`
+            : `<select aria-label="Район ${i + 1}" data-role="district" data-slot="${i}" ${isDistrict && !slot.locked ? "" : "disabled"} ${isDistrict ? "" : 'style="visibility:hidden"'}>${buildDistrictOptionsHtml(i, slot.measureId)}</select>`
         }
         <div class="slot-effects">${effectsText(i)}</div>
         <div class="slot-hint">${synergyHint(i)}</div>
@@ -264,11 +321,20 @@
     container.querySelectorAll('select[data-role="district"]').forEach((sel) => {
       sel.addEventListener("change", onDistrictChange);
     });
+    container.querySelectorAll('input[data-role="lock"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        remember();
+        state.slots[Number(input.dataset.slot)].locked = input.checked;
+        renderSlots();
+        scheduleSimulate();
+      });
+    });
 
     renderDirectionCounters();
   }
 
   function onMeasureChange(e) {
+    remember();
     const slotIndex = Number(e.target.dataset.slot);
     state.slots[slotIndex] = { measureId: e.target.value, districtId: "" };
     renderSlots();
@@ -276,6 +342,7 @@
   }
 
   function onDistrictChange(e) {
+    remember();
     const slotIndex = Number(e.target.dataset.slot);
     state.slots[slotIndex].districtId = e.target.value;
     renderSlots();
@@ -335,7 +402,9 @@
       }
 
       const critical = result.critical.filter((c) => c.district_id === d.id);
-      const tile = document.createElement("div");
+      const tile = document.createElement("button");
+      tile.type = "button";
+      tile.setAttribute("aria-expanded", String(state.selectedTileId === d.id));
       tile.className = `tile tile-${colorClass}${state.selectedTileId === d.id ? " selected" : ""}`;
       tile.dataset.districtId = d.id;
       tile.innerHTML = `
@@ -347,6 +416,11 @@
       `;
       tile.addEventListener("click", () => {
         state.selectedTileId = state.selectedTileId === d.id ? null : d.id;
+        container.querySelectorAll("button").forEach((button) => {
+          const selected = button.dataset.districtId === state.selectedTileId;
+          button.setAttribute("aria-expanded", String(selected));
+          button.classList.toggle("selected", selected);
+        });
         renderDistrictDetail();
       });
       container.appendChild(tile);
@@ -388,7 +462,7 @@
     const result = currentResult();
     if (!result) return;
 
-    const spent = result.total_cost;
+    const spent = totalCost(-1);
     const budget = state.config.budget;
     const over = spent > budget;
     const pct = Math.min(100, (spent / budget) * 100);
@@ -402,6 +476,9 @@
     const deltaClass = delta >= 0 ? "delta-pos" : "delta-neg";
     el("score-display").innerHTML =
       `${fmt2(scoreBefore)} → ${fmt2(scoreAfter)} <span class="${deltaClass}">(${fmtSigned2(delta)})</span>`;
+    if (state.pending || state.previewError || !state.lastSimulate?.result) {
+      el("score-display").textContent = state.pending ? "Пересчёт…" : "Завершите выбор";
+    }
 
     const critEl = el("crit-counter");
     critEl.textContent = `Критических: ${state.baseNCrit} → ${result.n_crit}`;
@@ -410,48 +487,38 @@
 
   function renderContributionsChart() {
     const result = currentResult();
-    const canvas = el("contrib-chart");
-    if (!result || !window.Chart) return;
-
-    const entries = Object.entries(result.contributions || {});
-    const labels = entries.map(([mid]) => (state.measuresById[mid] ? state.measuresById[mid].name : mid));
-    const values = entries.map(([, v]) => v);
-
-    if (window.__contribChart) {
-      window.__contribChart.data.labels = labels;
-      window.__contribChart.data.datasets[0].data = values;
-      window.__contribChart.update();
-      return;
-    }
-
-    window.__contribChart = new Chart(canvas.getContext("2d"), {
-      type: "bar",
-      data: {
-        labels,
-        datasets: [{ label: "Вклад в Score", data: values, backgroundColor: "#00A3E0" }],
-      },
-      options: {
-        indexAxis: "y",
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: { x: { beginAtZero: true } },
-      },
-    });
+    if (!result) return;
+    const entries = Object.entries(result.contributions || {}).sort((a, b) => b[1] - a[1]);
+    const max = Math.max(0.01, ...entries.map(([, value]) => Math.abs(value)));
+    el("contrib-chart").innerHTML = entries.map(([mid, value]) => `
+      <div class="contribution"><div><span>${esc(state.measuresById[mid]?.name || mid)}</span><strong class="${value < 0 ? "delta-neg" : "delta-pos"}">${fmtSigned2(value)}</strong></div>
+      <div class="contribution-track"><span class="${value < 0 ? "negative" : ""}" style="width:${Math.abs(value) / max * 100}%"></span></div></div>
+    `).join("") || '<p class="empty-state">Здесь появится вклад выбранных мер.</p>';
+    const names = { average: "Средний по городу", weakest: "Слабейший район", critical: "Критические показатели" };
+    el("score-breakdown").innerHTML = `<div class="table-scroll"><table class="comparison"><thead><tr><th>Компонент</th><th>До</th><th>После</th><th>Δ</th></tr></thead><tbody>${
+      Object.entries(result.score_components || {}).map(([key, value]) => `<tr><td>${names[key]}</td><td>${fmt2(value.before)}</td><td>${fmt2(value.after)}</td><td>${fmtSigned2(value.delta)}</td></tr>`).join("")
+    }</tbody></table></div>`;
   }
 
   function renderCalcButton() {
-    const filled = state.slots.every((s) => s.measureId);
+    const filled = state.slots.length === SLOT_COUNT && state.slots.every(completeSlot);
     const errors = (state.lastSimulate && state.lastSimulate.errors) || [];
-    const blocking = errors.filter((e) => e.code !== "INVALID_COUNT");
-    const ok = filled && blocking.length === 0;
+    const blocking = errors;
+    const busy = Object.values(state.busy).some((revision) => revision === state.revision);
+    const ok = filled && blocking.length === 0 && !state.pending && !state.previewError && Boolean(state.lastSimulate?.result) && !busy;
     el("btn-calc").disabled = !ok;
-    el("btn-agent").disabled = !ok;
+    const lockedCount = state.slots.filter((s) => s.locked).length;
+    el("btn-agent").disabled = !ok || lockedCount === SLOT_COUNT;
+    el("btn-calc").textContent = state.busy.calc === state.revision ? "Анализируем…" : "Рассчитать и проанализировать";
+    el("btn-agent").textContent = state.busy.agent === state.revision ? "Проверяем варианты…" : "Найти улучшение";
+    el("btn-undo").disabled = state.undo.length === 0;
+    el("lock-summary").textContent = lockedCount === SLOT_COUNT ? "Все решения закреплены. Снимите хотя бы одно закрепление для поиска." : `Закреплено ${lockedCount} из ${SLOT_COUNT}. Советник сохранит эти меры и районы.`;
 
     const errBox = el("calc-errors");
     if (!filled) {
       errBox.textContent = "";
     } else if (blocking.length) {
-      errBox.innerHTML = blocking.map((e) => e.message).join("<br>");
+      errBox.textContent = blocking.map((e) => e.message).join("\n");
     } else {
       errBox.textContent = "";
     }
@@ -460,19 +527,42 @@
   let simulateTimer = null;
   function scheduleSimulate() {
     clearTimeout(simulateTimer);
+    state.simulateController?.abort();
+    state.revision += 1;
+    state.pending = true;
+    state.previewError = false;
+    state.lastSimulate = null;
+    el("analysis-result").innerHTML = '<p class="empty-state">План изменён. Запустите анализ для текущих решений.</p>';
+    el("agent-result").textContent = "";
+    el("app-status").textContent = "Проверяем текущий план…";
+    el("btn-retry").hidden = true;
+    saveDraft();
+    renderHeader();
+    renderCalcButton();
+    el("center-column").setAttribute("aria-busy", "true");
     simulateTimer = setTimeout(runSimulate, 150);
   }
 
   async function runSimulate() {
-    const decisions = state.slots
-      .filter((s) => s.measureId)
-      .map((s) => ({ measure_id: s.measureId, district_id: s.districtId || null }));
+    const revision = state.revision;
+    const decisions = decisionsOf(state.slots);
+    state.simulateController = new AbortController();
     try {
-      const body = await api("/api/simulate", "POST", { decisions });
+      const body = await api("/api/simulate", "POST", { decisions }, state.simulateController.signal);
+      if (revision !== state.revision) return;
       state.lastSimulate = body;
+      state.previewError = false;
     } catch (e) {
+      if (revision !== state.revision) return;
       state.lastSimulate = null;
+      state.previewError = true;
     }
+    state.pending = false;
+    el("center-column").setAttribute("aria-busy", "false");
+    el("app-status").textContent = state.previewError ? "Не удалось проверить план. Расчёт и поиск временно недоступны — повторите запрос." :
+      !state.lastSimulate?.result ? "Выберите район для каждой районной меры. Пока показаны исходные показатели." :
+      state.lastSimulate.errors.length ? "Предварительный результат: исправьте ограничения, чтобы сохранить сценарий." : "Показатели обновлены. План автоматически проверен.";
+    el("btn-retry").hidden = !state.previewError;
     renderHeader();
     renderTiles();
     renderContributionsChart();
@@ -494,26 +584,27 @@
 
   function renderAnalysis(analysis, aiMode) {
     const box = el("analysis-result");
-    const list = (arr) => (arr || []).map((x) => `<li>${x}</li>`).join("");
+    const list = (arr) => (arr || []).map((x) => `<li>${esc(x)}</li>`).join("");
     box.innerHTML = `
-      ${aiMode === "fallback" ? '<span class="badge badge-fallback">AI офлайн: шаблонный анализ</span>' : ""}
-      <section><h3>Итог</h3><p>${analysis.summary}</p></section>
+      <span class="badge ${aiMode === "fallback" ? "badge-fallback" : ""}">${aiMode === "fallback" ? "Шаблонный анализ · без LLM" : "AI-анализ · расчёт проверен движком"}</span>
+      <section><h3>Итог</h3><p>${esc(analysis.summary)}</p></section>
       <section><h3>Сильные стороны</h3><ul>${list(analysis.strengths)}</ul></section>
       <section><h3>Риски</h3><ul>${list(analysis.risks)}</ul></section>
       <section><h3>Последствия</h3><ul>${list(analysis.consequences)}</ul></section>
-      <section><h3>Главный компромисс</h3><p>${analysis.main_tradeoff}</p></section>
+      <section><h3>Главный компромисс</h3><p>${esc(analysis.main_tradeoff)}</p></section>
     `;
   }
 
   async function onCalcClick() {
-    const btn = el("btn-calc");
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Считаем…';
+    if (el("btn-calc").disabled) return;
+    const revision = state.revision;
+    state.busy.calc = revision;
+    renderCalcButton();
     try {
       const decisions = state.slots.map((s) => ({ measure_id: s.measureId, district_id: s.districtId || null }));
       const team = el("team-input").value.trim() || "Команда";
       const body = await api("/api/scenario", "POST", { team, decisions });
+      if (revision !== state.revision) return;
       state.lastSimulate = { result: body.result, errors: [] };
       renderHeader();
       renderTiles();
@@ -522,54 +613,75 @@
       renderAnalysis(body.analysis, body.ai_mode);
       await refreshLeaderboard();
     } catch (e) {
+      if (revision !== state.revision) return;
       el("analysis-result").innerHTML = `<p class="error-text">Не удалось получить ответ, попробуйте ещё раз.</p>`;
     } finally {
-      btn.textContent = originalText;
+      if (state.busy.calc === revision) delete state.busy.calc;
       renderCalcButton();
     }
   }
 
-  function renderAgentResult(body) {
+  function renderAgentResult(body, originalDecisions, revision) {
     const box = el("agent-result");
     const hyps = (body.hypotheses || [])
       .map((h) => {
         const ok = h.valid;
         return `<li class="hypothesis-item">
-          <span>${h.idea}</span>
-          <span class="${ok ? "hypothesis-ok" : "hypothesis-bad"}">${ok ? "Score " + fmt2(h.score) + " ✓" : h.error || "отклонено"}</span>
+          <span>${esc(h.idea)}</span>
+          <span class="${ok ? "hypothesis-ok" : "hypothesis-bad"}">${ok ? "Score " + fmt2(h.score) + " ✓" : esc(h.error || "отклонено")}</span>
         </li>`;
       })
       .join("");
-    const delta = body.best_score - body.original_score;
+    const delta = body.delta;
+    const removed = originalDecisions.filter((d) => !body.best_decisions.some((best) => sameDecision(d, best)));
+    const added = body.best_decisions.filter((d) => !originalDecisions.some((original) => sameDecision(d, original)));
+    const before = body.original_result;
+    const after = body.best_result;
+    const rows = [
+      ["Score", before.score_after, after.score_after],
+      ["Бюджет", before.total_cost, after.total_cost],
+      ["Критических значений", before.n_crit, after.n_crit],
+      ["Слабейший район: балл", before.d_min, after.d_min],
+      ...before.districts.map((d) => [d.name, d.d_after, after.districts.find((best) => best.id === d.id).d_after]),
+    ];
     box.innerHTML = `
-      ${body.ai_mode === "fallback" ? '<span class="badge badge-fallback">AI офлайн: шаблонный поиск</span>' : ""}
-      <ul class="hypothesis-list">${hyps}</ul>
+      <span class="badge ${body.source === "baseline" ? "badge-fallback" : ""}">${body.source === "agent" ? "Предложение AI" : "Детерминированный поиск"} · проверено движком</span>
       <p><strong>${fmt2(body.original_score)} → ${fmt2(body.best_score)} (${fmtSigned2(delta)})</strong></p>
-      <p>${body.explanation}</p>
-      <button id="btn-apply" class="btn btn-primary btn-block">Применить</button>
+      <div class="table-scroll"><table class="comparison"><caption>Ваш план и предложение</caption><thead><tr><th>Показатель</th><th>Ваш план</th><th>Предложение</th></tr></thead><tbody>${rows.map(([name, a, b]) => `<tr><td>${esc(name)}</td><td>${fmt2(a)}</td><td>${fmt2(b)}</td></tr>`).join("")}</tbody></table></div>
+      ${removed.length ? `<div class="decision-diff"><h3>Убрать</h3><ul>${removed.map((d) => `<li>${esc(decisionLabel(d))}</li>`).join("")}</ul><h3>Добавить</h3><ul>${added.map((d) => `<li>${esc(decisionLabel(d))}</li>`).join("")}</ul></div>` : '<p>Текущий план сохранён: улучшение не найдено.</p>'}
+      <p>${esc(body.explanation)}</p>
+      <details><summary>Проверенные шаги поиска (${(body.hypotheses || []).length})</summary><ul class="hypothesis-list">${hyps || '<li>Нет шагов с улучшением.</li>'}</ul></details>
+      <button id="btn-apply" class="btn btn-primary btn-block" ${removed.length ? "" : "disabled"}>Применить предложение</button>
     `;
-    el("btn-apply").addEventListener("click", () => applyDecisions(body.best_decisions));
+    el("btn-apply").addEventListener("click", () => {
+      if (revision === state.revision) applyDecisions(body.best_decisions);
+    });
   }
 
   function applyDecisions(decisions) {
-    state.slots = decisions.map((d) => ({ measureId: d.measure_id, districtId: d.district_id || "" }));
+    remember();
+    const locked = decisionsOf(state.slots.filter((s) => s.locked));
+    state.slots = decisions.map((d) => ({ measureId: d.measure_id, districtId: d.district_id || "", locked: locked.some((original) => sameDecision(original, d)) }));
     renderSlots();
     scheduleSimulate();
   }
 
   async function onAgentClick() {
-    const btn = el("btn-agent");
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>Ищем…';
+    if (el("btn-agent").disabled) return;
+    const revision = state.revision;
+    state.busy.agent = revision;
+    renderCalcButton();
     try {
       const decisions = state.slots.map((s) => ({ measure_id: s.measureId, district_id: s.districtId || null }));
-      const body = await api("/api/optimize", "POST", { decisions });
-      renderAgentResult(body);
+      const locked_decisions = decisionsOf(state.slots.filter((s) => s.locked));
+      const body = await api("/api/optimize", "POST", { decisions, locked_decisions });
+      if (revision !== state.revision) return;
+      renderAgentResult(body, decisions, revision);
     } catch (e) {
+      if (revision !== state.revision) return;
       el("agent-result").innerHTML = `<p class="error-text">Не удалось получить ответ, попробуйте ещё раз.</p>`;
     } finally {
-      btn.textContent = originalText;
+      if (state.busy.agent === revision) delete state.busy.agent;
       renderCalcButton();
     }
   }
@@ -604,7 +716,7 @@
     for (const row of state.leaderboard) {
       const tr = document.createElement("tr");
       const rankLabel = MEDALS[row.rank] ? `${MEDALS[row.rank]} ${row.rank}` : row.rank;
-      tr.innerHTML = `<td>${rankLabel}</td><td>${row.team}</td><td>${fmt2(row.score)}</td><td>${fmt2(row.total_cost)}</td><td>${new Date(row.created_at).toLocaleString("ru-RU")}</td>`;
+      tr.innerHTML = `<td>${rankLabel}</td><td>${esc(row.team)}</td><td>${fmt2(row.score)}</td><td>${fmt2(row.total_cost)}</td><td>${new Date(row.created_at).toLocaleString("ru-RU")}</td>`;
       const detailTr = document.createElement("tr");
       detailTr.className = "leaderboard-detail";
       detailTr.hidden = true;
@@ -629,8 +741,11 @@
   }
 
   async function init() {
+    el("app-status").textContent = "Загружаем город…";
     const stateBody = await api("/api/state");
     state.config = stateBody.config;
+    SLOT_COUNT = state.config.decisions_count;
+    state.slots = Array.from({ length: SLOT_COUNT }, () => ({ measureId: "", districtId: "", locked: false }));
     state.districts = stateBody.districts;
     state.measures = stateBody.measures;
     for (const d of state.districts) state.districtsById[d.id] = d;
@@ -638,6 +753,7 @@
     state.baseResult = stateBody.result;
     state.baseNCrit = stateBody.result.n_crit;
     state.lastSimulate = { result: stateBody.result, errors: [] };
+    restoreDraft();
 
     renderIndicatorSelect();
     renderSlots();
@@ -647,17 +763,41 @@
     renderSynergyBadges();
     renderCalcButton();
 
-    el("btn-calc").addEventListener("click", onCalcClick);
-    el("btn-agent").addEventListener("click", onAgentClick);
+    el("btn-calc").onclick = onCalcClick;
+    el("btn-agent").onclick = onAgentClick;
+    el("team-input").oninput = saveDraft;
+    el("btn-example").onclick = () => {
+      remember();
+      state.slots = EXAMPLE.map((s) => ({ ...s, locked: false }));
+      renderSlots();
+      scheduleSimulate();
+    };
+    el("btn-reset").onclick = () => {
+      remember();
+      state.slots = Array.from({ length: SLOT_COUNT }, () => ({ measureId: "", districtId: "", locked: false }));
+      renderSlots();
+      scheduleSimulate();
+    };
+    el("btn-undo").onclick = () => {
+      if (!state.undo.length) return;
+      state.slots = state.undo.pop();
+      renderSlots();
+      scheduleSimulate();
+    };
 
+    state.ready = true;
     document.body.classList.add("app-ready");
+    scheduleSimulate();
 
     await refreshLeaderboard();
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    init().catch((e) => {
-      console.error(e);
+    const start = () => init().catch(() => {
+      el("app-status").textContent = "Не удалось загрузить данные города. Проверьте соединение и повторите загрузку.";
+      el("btn-retry").hidden = false;
     });
+    el("btn-retry").onclick = () => state.ready ? scheduleSimulate() : start();
+    start();
   });
 })();

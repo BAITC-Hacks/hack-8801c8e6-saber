@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from app import engine
 from app.ai import llm, prompts
@@ -17,6 +19,20 @@ REQUIRED_FIELDS = ("summary", "strengths", "risks", "consequences", "main_tradeo
 
 class _BadAnalysis(ValueError):
     pass
+
+
+AnalysisText = Annotated[str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=4000)]
+
+
+class AnalysisResponse(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    summary: AnalysisText
+    strengths: list[AnalysisText] = Field(min_length=1, max_length=20)
+    risks: list[AnalysisText] = Field(min_length=1, max_length=20)
+    consequences: list[AnalysisText] = Field(min_length=1, max_length=20)
+    main_tradeoff: AnalysisText
+    weakest_district: AnalysisText
 
 
 def _decision_district(decisions: list[Decision], measure_id: str) -> str | None:
@@ -95,15 +111,16 @@ def _build_payload(decisions: list[Decision], result: dict[str, Any], data: AppD
     }
 
 
-def _validate(response: Any, data: AppData) -> dict[str, Any]:
-    if not isinstance(response, dict):
-        raise _BadAnalysis("response is not a JSON object")
-    for field in REQUIRED_FIELDS:
-        if field not in response or response[field] in (None, "", []):
-            raise _BadAnalysis(f"missing or empty field: {field}")
-    if response["weakest_district"] not in data.districts_by_id:
-        raise _BadAnalysis("weakest_district unknown")
-    return response
+def _validate(response: Any, data: AppData, result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        parsed = AnalysisResponse.model_validate(response)
+    except ValidationError as exc:
+        raise _BadAnalysis("invalid analysis schema") from exc
+    weakest = parsed.weakest_district
+    scores = {d["id"]: d["d_after"] for d in result["districts"]}
+    if weakest not in data.districts_by_id or abs(scores[weakest] - result["d_min"]) > 1e-9:
+        raise _BadAnalysis("weakest_district contradicts engine result")
+    return parsed.model_dump()
 
 
 def _fallback(decisions: list[Decision], result: dict[str, Any], data: AppData) -> dict[str, Any]:
@@ -193,11 +210,12 @@ def analyze(decisions: list[Decision], result: dict[str, Any], data: AppData) ->
     for _ in range(2):
         try:
             candidate = llm.complete_json(prompts.ANALYST_SYSTEM, user)
-            response = _validate(candidate, data)
+            response = _validate(candidate, data, result)
             break
         except (llm.LLMUnavailable, _BadAnalysis) as e:
             logger.warning("analyst LLM attempt failed, retrying/falling back: %s", e)
             response = None
+            user = json.dumps(payload, ensure_ascii=False) + "\nВерни полный JSON нужной структуры: списки строк, непустые тексты и weakest_district из расчёта."
             continue
 
     if response is not None:

@@ -22,6 +22,7 @@ class ScenarioRequest(BaseModel):
 
 class OptimizeRequest(BaseModel):
     decisions: list[DecisionIn] = Field(default_factory=list)
+    locked_decisions: list[DecisionIn] = Field(default_factory=list, max_length=5)
 
 
 class HealthOut(BaseModel):

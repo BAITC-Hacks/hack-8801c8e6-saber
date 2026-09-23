@@ -20,13 +20,15 @@ def all_options(data: AppData) -> list[Decision]:
     return options
 
 
-def single_swap_search(decisions: list[Decision], data: AppData) -> tuple[list[Decision] | None, float | None]:
+def single_swap_search(decisions: list[Decision], data: AppData, locked_decisions: list[Decision] | None = None) -> tuple[list[Decision] | None, float | None]:
     """Tries replacing each decision with every other option; returns the best valid result."""
     options = all_options(data)
     best_decisions: list[Decision] | None = None
     best_score: float | None = None
 
     for i in range(len(decisions)):
+        if decisions[i] in (locked_decisions or []):
+            continue
         for option in options:
             if option.measure_id == decisions[i].measure_id and option.district_id == decisions[i].district_id:
                 continue
@@ -42,13 +44,13 @@ def single_swap_search(decisions: list[Decision], data: AppData) -> tuple[list[D
     return best_decisions, best_score
 
 
-def hill_climb(decisions: list[Decision], data: AppData, max_rounds: int = 5) -> dict[str, Any]:
+def hill_climb(decisions: list[Decision], data: AppData, max_rounds: int = 5, *, locked_decisions: list[Decision] | None = None) -> dict[str, Any]:
     current = list(decisions)
     current_score = simulate(current, data, _with_contributions=False)["score_after"]
     steps: list[dict] = []
 
     for _ in range(max_rounds):
-        candidate, cand_score = single_swap_search(current, data)
+        candidate, cand_score = single_swap_search(current, data, locked_decisions)
         if candidate is None or cand_score is None:
             break
         if cand_score - current_score > 1e-9:

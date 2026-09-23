@@ -47,7 +47,7 @@ def leaderboard(limit: int = 50, db_path: Path = DB_PATH) -> list[dict[str, Any]
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
-            "SELECT id, team, score, total_cost, decisions_json, created_at FROM scenarios ORDER BY score DESC LIMIT ?",
+            "SELECT id, team, score, total_cost, decisions_json, created_at FROM scenarios ORDER BY score DESC, id ASC LIMIT ?",
             (limit,),
         ).fetchall()
     finally:

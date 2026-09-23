@@ -6,16 +6,30 @@ import logging
 import os
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+
 from app import engine, optimizer
 from app.ai import llm, prompts
 from app.data_loader import AppData
 from app.engine import Decision
+from app.models import DecisionIn
 
 logger = logging.getLogger(__name__)
 
 
 class _BadAgent(ValueError):
     pass
+
+
+class AgentResponse(BaseModel):
+    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
+    best_decisions: list[DecisionIn] = Field(min_length=5, max_length=5)
+    explanation: str = Field(min_length=1, max_length=8000)
+
+
+def _parse_decisions(raw: Any) -> list[Decision]:
+    items = TypeAdapter(list[DecisionIn]).validate_python(raw, strict=True)
+    return [Decision(item.measure_id, item.district_id) for item in items]
 
 
 def _extract_json(text: str) -> dict:
@@ -40,10 +54,12 @@ def _decision_dicts(decisions: list[Decision]) -> list[dict]:
     return [{"measure_id": d.measure_id, "district_id": d.district_id} for d in decisions]
 
 
-def _handler_simulate(inp: dict, data: AppData) -> dict:
+def _handler_simulate(inp: dict, data: AppData, locked_decisions: list[Decision] | None = None) -> dict:
     raw_decisions = inp.get("decisions") or []
-    candidate = [Decision(d.get("measure_id"), d.get("district_id")) for d in raw_decisions]
+    candidate = _parse_decisions(raw_decisions)
     errors = engine.validate(candidate, data)
+    if not set(locked_decisions or []).issubset(candidate):
+        errors.append({"code": "LOCKED_DECISION_CHANGED"})
     if errors:
         return {
             "valid": False,
@@ -182,11 +198,12 @@ def _explain_baseline(steps: list[dict], original_score: float, best_score: floa
     return f"Метод hill_climb нашёл улучшение: {joined}. Score вырос с {original_score:.2f} до {best_score:.2f} ({sign}{delta:.2f})."
 
 
-def optimize(decisions: list[Decision], data: AppData) -> dict[str, Any]:
+def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list[Decision] | None = None) -> dict[str, Any]:
+    locked_decisions = locked_decisions or []
     original_result = engine.simulate(decisions, data, _with_contributions=False)
     original_score = original_result["score_after"]
 
-    baseline = optimizer.hill_climb(decisions, data)
+    baseline = optimizer.hill_climb(decisions, data, locked_decisions=locked_decisions)
     baseline_score = baseline["score"]
     baseline_decisions = baseline["decisions"]
     baseline_hyp = _baseline_hypotheses(baseline["steps"], data)
@@ -198,24 +215,24 @@ def optimize(decisions: list[Decision], data: AppData) -> dict[str, Any]:
     ai_mode = "fallback"
 
     try:
+        if len(locked_decisions) == len(decisions):
+            raise _BadAgent("all decisions are locked; no search needed")
         max_calls = int(os.environ.get("AGENT_MAX_TOOL_CALLS", "8"))
         user = _build_agent_user(decisions, original_result, data)
+        user += "\nЗакреплённые решения (сохрани меру И район): " + json.dumps(_decision_dicts(locked_decisions), ensure_ascii=False)
         handlers = {
-            "simulate": lambda inp: _handler_simulate(inp, data),
+            "simulate": lambda inp: _handler_simulate(inp, data, locked_decisions),
             "list_measures": lambda inp: _handler_list_measures(inp, data),
             "get_district": lambda inp: _handler_get_district(inp, data),
         }
         final_text, trace = llm.run_tools(prompts.AGENT_SYSTEM, user, prompts.AGENT_TOOLS, handlers, max_calls)
-        parsed = _extract_json(final_text)
-        raw_decisions = parsed.get("best_decisions")
-        if not raw_decisions:
-            raise _BadAgent("no best_decisions in agent response")
-        candidate = [Decision(d.get("measure_id"), d.get("district_id")) for d in raw_decisions]
+        parsed = AgentResponse.model_validate(_extract_json(final_text))
+        candidate = [Decision(d.measure_id, d.district_id) for d in parsed.best_decisions]
         if engine.validate(candidate, data):
             raise _BadAgent("agent decisions failed validation")
-        explanation = (parsed.get("explanation") or "").strip()
-        if not explanation:
-            raise _BadAgent("empty explanation")
+        if not set(locked_decisions).issubset(candidate):
+            raise _BadAgent("agent changed a locked decision")
+        explanation = parsed.explanation
 
         agent_result = engine.simulate(candidate, data, _with_contributions=False)
         agent_decisions = candidate
@@ -250,6 +267,9 @@ def optimize(decisions: list[Decision], data: AppData) -> dict[str, Any]:
     else:
         delta = best_score - original_score
 
+    if len(locked_decisions) == len(decisions):
+        explanation = "Все пять решений закреплены. Снимите закрепление хотя бы с одного, чтобы искать улучшение."
+
     return {
         "original_score": round(original_score, 2),
         "best_decisions": _decision_dicts(best_decisions),
@@ -260,4 +280,7 @@ def optimize(decisions: list[Decision], data: AppData) -> dict[str, Any]:
         "baseline": {"method": "hill_climb", "score": round(baseline_score, 2) if baseline_score is not None else None},
         "source": source,
         "ai_mode": ai_mode,
+        "locked_decisions": _decision_dicts(locked_decisions),
+        "original_result": engine.round_result(engine.simulate(decisions, data)),
+        "best_result": engine.round_result(engine.simulate(best_decisions, data)),
     }

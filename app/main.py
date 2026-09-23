@@ -87,7 +87,7 @@ def api_scenario(body: ScenarioRequest) -> dict[str, Any]:
     scenario_id = storage.save_scenario(
         body.team,
         _decisions_out(decisions),
-        score=rounded_result["score_after"],
+        score=raw_result["score_after"],
         total_cost=rounded_result["total_cost"],
     )
 
@@ -106,7 +106,14 @@ def api_optimize(body: OptimizeRequest) -> dict[str, Any]:
     if errors:
         raise _error_response(errors)
 
-    return agent.optimize(decisions, data)
+    locked = _to_decisions(body.locked_decisions)
+    if len(set(locked)) != len(locked) or not set(locked).issubset(decisions):
+        raise _error_response([{
+            "code": "INVALID_LOCKS",
+            "message": "Закреплять можно только уникальные решения текущего сценария вместе с их районом.",
+            "detail": {},
+        }])
+    return agent.optimize(decisions, data, locked_decisions=locked)
 
 
 @app.get("/api/leaderboard")

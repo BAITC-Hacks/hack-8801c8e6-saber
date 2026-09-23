@@ -23,6 +23,13 @@
         <input id="team-input" type="text" maxlength="40" placeholder="Название команды" value="Команда 1" />
       </label>
     </div>
+    <p class="intro">Пять решений. Один бюджет. Каким станет ваш город?</p>
+    <div class="toolbar">
+      <button id="btn-example" class="btn btn-secondary">Загрузить пример</button>
+      <button id="btn-undo" class="btn btn-secondary" disabled>Отменить изменение</button>
+      <button id="btn-reset" class="btn btn-secondary">Начать заново</button>
+      <span id="draft-status" class="muted">Синтетические данные · горизонт 8 кварталов</span>
+    </div>
     <div class="header-row header-metrics">
       <div class="metric-chip budget-bar" id="budget-bar">
         <span class="metric-label">Бюджет</span>
@@ -38,53 +45,62 @@
       <div id="crit-counter" class="crit-counter">Критических: —</div>
     </div>
   </header>
+  <div id="app-status" class="app-status" role="status" aria-live="polite"></div>
+  <button id="btn-retry" class="btn btn-secondary retry" hidden>Повторить загрузку</button>
 
   <main class="layout">
     <section id="left-column" class="column">
-      <p class="hint">Выберите 5 мер на 100 усл. ед. Score — это 70% среднего по городу, 30% самого слабого района и −1 за каждый показатель ниже 40.</p>
+      <div class="section-heading"><span class="eyebrow">01 / ВАШ ПЛАН</span><h2>Решения для города</h2></div>
+      <p class="hint">Выберите ровно 5 мер в пределах 100 усл. ед., не больше двух одного направления. Закрепите важные решения — советник сохранит и меру, и район.</p>
       <div id="direction-counters" class="direction-counters"></div>
       <div id="slots" class="slots"></div>
       <button id="btn-calc" class="btn btn-primary btn-block" disabled>Рассчитать и проанализировать</button>
-      <div id="calc-errors" class="calc-errors"></div>
+      <div id="calc-errors" class="calc-errors" role="status"></div>
     </section>
 
     <section id="center-column" class="column">
+      <div class="section-heading"><span class="eyebrow">02 / ВЛИЯНИЕ</span><h2>Что изменится в районах</h2></div>
       <div class="indicator-toggle-row">
         <label for="indicator-select">Показатель:</label>
         <select id="indicator-select"></select>
       </div>
       <div id="district-tiles" class="district-tiles"></div>
       <div id="district-detail" class="district-detail" hidden></div>
+      <div class="panel"><h2>Из чего складывается Score</h2><div id="score-breakdown"></div>
+        <p class="chart-caption">70% среднего по городу + 30% слабейшего района − штрафы за показатели ниже 40. Компоненты округлены независимо.</p>
+      </div>
     </section>
 
     <aside id="right-column" class="column">
+      <div class="section-heading"><span class="eyebrow">03 / СОВЕТНИК</span><h2>Проверьте свою стратегию</h2></div>
       <div class="panel" id="analysis-panel">
         <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>Анализ</h2>
-        <div class="chart-wrap"><canvas id="contrib-chart" height="220"></canvas></div>
-        <p class="chart-caption">Вклад = насколько упадёт Score без этой меры</p>
+        <div id="contrib-chart" class="contributions"></div>
+        <p class="chart-caption">Вклад = насколько упадёт Score без этой меры. Из-за синергий и порогов сумма вкладов может отличаться от общего прироста.</p>
         <div id="synergy-badges" class="badges"></div>
-        <div id="analysis-result" class="analysis-result"></div>
+        <div id="analysis-result" class="analysis-result"><p class="empty-state">Соберите пять решений и запустите анализ, чтобы увидеть сильные стороны и риски.</p></div>
       </div>
 
       <div class="panel" id="agent-panel">
         <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Агент</h2>
+        <p id="lock-summary" class="muted">Закреплённых решений нет.</p>
         <button id="btn-agent" class="btn btn-secondary btn-block" disabled>Найти улучшение</button>
         <div id="agent-result" class="agent-result"></div>
       </div>
 
       <div class="panel" id="leaderboard-panel">
         <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 5H4a1 1 0 0 0-1 1v1a4 4 0 0 0 4 4M17 5h3a1 1 0 0 1 1 1v1a4 4 0 0 1-4 4"/></svg>Лидеры</h2>
-        <table id="leaderboard-table" class="leaderboard-table">
+        <div class="table-scroll"><table id="leaderboard-table" class="leaderboard-table">
           <thead>
             <tr><th>#</th><th>Команда</th><th>Score</th><th>Стоимость</th><th>Время</th></tr>
           </thead>
           <tbody id="leaderboard-body"></tbody>
-        </table>
+        </table></div>
       </div>
     </aside>
   </main>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <footer>Учебная модель на синтетических данных. Score сравнивает сценарии внутри симулятора и не является прогнозом реального города.</footer>
   <script src="app.js"></script>
 </body>
 </html>

@@ -1,0 +1,137 @@
+// No browser dependency: exercise request races and unsafe text at the UI boundary.
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const root = path.join(__dirname, '..');
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function harness() {
+  const elements = new Map();
+  function element() {
+    return { innerHTML: '', textContent: '', value: 'Test', children: [], disabled: false,
+      style: {}, dataset: {}, classList: { add() {}, toggle() {} },
+      appendChild(child) { this.children.push(child); },
+      addEventListener() {}, setAttribute() {}, querySelectorAll() { return []; } };
+  }
+  const document = { getElementById(id) {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  }, createElement: element, addEventListener() {}, body: element() };
+  const requests = [];
+  const context = vm.createContext({ document, console, AbortController,
+    setTimeout() { return 1; }, clearTimeout() {}, localStorage: { setItem() {} },
+    fetch(url) { const request = deferred(); requests.push({ url, ...request }); return request.promise; },
+  });
+  let source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
+  source = source.replace(/\}\)\(\);\s*$/, `globalThis.ui = { state, runSimulate, scheduleSimulate, renderCalcButton, renderAnalysis, renderLeaderboard, renderAgentResult, onCalcClick, onAgentClick, applyDecisions }; })();`);
+  vm.runInContext(source, context);
+  const ui = context.ui;
+  const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json')));
+  const districts = JSON.parse(fs.readFileSync(path.join(root, 'data/districts.json')));
+  const measures = JSON.parse(fs.readFileSync(path.join(root, 'data/measures.json')));
+  const base = { score_before: 52.56, score_after: 56.54, total_cost: 95, n_crit: 0, critical: [],
+    districts: districts.map((d) => ({...d, d_before: 50, d_after: 55, indicators_before: d.indicators, indicators_after: d.indicators})),
+    contributions: {}, score_components: {}, synergies_applied: [], d_min: 55 };
+  Object.assign(ui.state, { config, districts, measures, baseResult: base,
+    districtsById: Object.fromEntries(districts.map((d) => [d.id, d])),
+    measuresById: Object.fromEntries(measures.map((m) => [m.id, m])),
+    slots: [['M7','nura'], ['M8','nura'], ['M10','nura'], ['M12',''], ['M5','saryarka']].map(([measureId,districtId]) => ({measureId,districtId})),
+    lastSimulate: { result: base, errors: [] },
+  });
+  const reply = (request, body) => request.resolve({ ok: true, json: async () => body });
+  return { ui, elements, el: document.getElementById, requests, base, reply };
+}
+
+test('out-of-order previews cannot overwrite a newer scenario', async () => {
+  const { ui, requests, base, reply } = harness();
+  const first = ui.runSimulate();
+  ui.scheduleSimulate();
+  const second = ui.runSimulate();
+  reply(requests[1], {result: {...base, score_after: 57.21}, errors: []});
+  await second;
+  reply(requests[0], {result: {...base, score_after: 52}, errors: []});
+  await first;
+  assert.equal(ui.state.lastSimulate.result.score_after, 57.21);
+});
+
+test('failed preview and missing district never enable final actions', async () => {
+  const { ui, requests, el, base } = harness();
+  const run = ui.runSimulate();
+  requests[0].reject(new Error('offline'));
+  await run;
+  assert.equal(el('btn-calc').disabled, true);
+  assert.equal(el('btn-agent').disabled, true);
+  assert.equal(el('btn-retry').hidden, false);
+  ui.state.previewError = false;
+  ui.state.lastSimulate = {result: base, errors: []};
+  ui.state.slots[0].districtId = '';
+  ui.renderCalcButton();
+  assert.equal(el('btn-calc').disabled, true);
+});
+
+test('editing invalidates an in-flight analysis', async () => {
+  const { ui, requests, el, base, reply } = harness();
+  ui.renderCalcButton();
+  const run = ui.onCalcClick();
+  ui.scheduleSimulate();
+  const placeholder = el('analysis-result').innerHTML;
+  reply(requests[0], {result: base, analysis: {summary: 'OLD'}, ai_mode: 'llm'});
+  await run;
+  assert.equal(el('analysis-result').innerHTML, placeholder);
+  assert.equal(ui.state.lastSimulate, null);
+});
+
+test('editing invalidates an in-flight optimization', async () => {
+  const { ui, requests, el, reply } = harness();
+  ui.renderCalcButton();
+  const run = ui.onAgentClick();
+  ui.scheduleSimulate();
+  reply(requests[0], {explanation: 'OLD'});
+  await run;
+  assert.equal(el('agent-result').textContent, '');
+  assert.equal(el('agent-result').innerHTML, '');
+});
+
+test('preview completion cannot enable duplicate analysis requests', async () => {
+  const { ui, requests, el, base, reply } = harness();
+  ui.state.busy.calc = ui.state.revision;
+  const run = ui.runSimulate();
+  reply(requests[0], {result: base, errors: []});
+  await run;
+  assert.equal(el('btn-calc').disabled, true);
+  assert.equal(el('btn-agent').disabled, true);
+});
+
+test('team names and AI text are rendered as escaped text', () => {
+  const { ui, el, base } = harness();
+  const payload = '<img src=x onerror=alert(1)>';
+  ui.renderAnalysis({ summary: payload, strengths: [payload], risks: [payload], consequences: [payload], main_tradeoff: payload }, 'llm');
+  assert.ok(el('analysis-result').innerHTML.includes('&lt;img'));
+  assert.ok(!el('analysis-result').innerHTML.includes('<img'));
+  ui.state.leaderboard = [{rank: 1, team: payload, score: 1, total_cost: 1, created_at: '2026-09-23', decisions: []}];
+  ui.renderLeaderboard();
+  assert.ok(el('leaderboard-body').children[0].innerHTML.includes('&lt;img'));
+  const decisions = ui.state.slots.map((s) => ({measure_id: s.measureId, district_id: s.districtId || null}));
+  ui.renderAgentResult({ original_result: base, best_result: base, original_score: 56.54, best_score: 56.54, delta: 0,
+    best_decisions: decisions, hypotheses: [{idea: payload, valid: false, error: payload}], explanation: payload }, decisions, 0);
+  assert.ok(!el('agent-result').innerHTML.includes('<img'));
+});
+
+test('applying improvement retains locks and an undo snapshot', () => {
+  const { ui } = harness();
+  ui.state.slots[0].locked = true;
+  const original = JSON.stringify(ui.state.slots);
+  const decisions = ui.state.slots.map((s) => ({measure_id: s.measureId, district_id: s.districtId || null}));
+  decisions[4] = {measure_id: 'M3', district_id: 'nura'};
+  ui.applyDecisions(decisions);
+  assert.equal(ui.state.slots[0].locked, true);
+  assert.equal(ui.state.slots[4].measureId, 'M3');
+  assert.equal(JSON.stringify(ui.state.undo[0]), original);
+});
