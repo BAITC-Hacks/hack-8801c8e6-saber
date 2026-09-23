@@ -26,10 +26,12 @@ function harness({ respectAbort = false } = {}) {
     return elements.get(id);
   }, createElement: element, addEventListener() {}, body: element() };
   const requests = [];
+  const mapSnapshots = [];
   const drafts = new Map();
   const timers = new Map();
   let timerId = 0;
   const context = vm.createContext({ document, console, AbortController,
+    AstanaMap: { update(snapshot) { mapSnapshots.push(snapshot); } },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, delay}); return id; },
     clearTimeout(id) { timers.delete(id); },
     localStorage: { setItem(key, value) { drafts.set(key, value); }, getItem(key) { return drafts.get(key) || null; } },
@@ -65,8 +67,38 @@ function harness({ respectAbort = false } = {}) {
       if (timer.delay === delay) { timers.delete(id); timer.callback(); }
     }
   }
-  return { ui, elements, el: document.getElementById, requests, base, reply, drafts, timers, expireTimers };
+  return { ui, elements, el: document.getElementById, requests, base, reply, drafts, timers, expireTimers, mapSnapshots };
 }
+
+test('map invalidates old scenario colors during edits and receives only the newest preview', async () => {
+  const {ui, requests, base, reply, mapSnapshots} = harness();
+  ui.state.lastSimulate = {result:{...base,score_after:99},errors:[]};
+  const first = ui.runSimulate();
+  ui.scheduleSimulate();
+  assert.equal(mapSnapshots.at(-1).pending,true);
+  assert.equal(mapSnapshots.at(-1).previewValid,false);
+  assert.equal(mapSnapshots.at(-1).result,ui.state.baseResult);
+  const second = ui.runSimulate();
+  reply(requests[1],{result:{...base,score_after:57.21},errors:[]});
+  await second;
+  assert.equal(mapSnapshots.at(-1).pending,false);
+  assert.equal(mapSnapshots.at(-1).result.score_after,57.21);
+  const count = mapSnapshots.length;
+  reply(requests[0],{result:{...base,score_after:99},errors:[]});
+  await first;
+  assert.equal(mapSnapshots.length,count);
+});
+
+test('map failure state uses baseline values instead of a previous result', async () => {
+  const {ui, requests, mapSnapshots} = harness();
+  ui.scheduleSimulate();
+  const run = ui.runSimulate();
+  requests[0].reject(new Error('offline'));
+  await run;
+  assert.equal(mapSnapshots.at(-1).error,true);
+  assert.equal(mapSnapshots.at(-1).previewValid,false);
+  assert.equal(mapSnapshots.at(-1).result,ui.state.baseResult);
+});
 
 test('out-of-order previews cannot overwrite a newer scenario', async () => {
   const { ui, requests, base, reply } = harness();

@@ -4,7 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Аким на 5 часов</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
 <link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="city-map.css" />
 </head>
 <body>
   <header id="header">
@@ -48,6 +50,40 @@
   <div id="app-status" class="app-status" role="status" aria-live="polite"></div>
   <button id="btn-retry" class="btn btn-secondary retry" hidden>Повторить загрузку</button>
 
+  <section class="city-atlas" aria-labelledby="atlas-title">
+    <div class="atlas-heading">
+      <div><span class="eyebrow">АСТАНА / ГОРОД В ВАШИХ РУКАХ</span><h2 id="atlas-title">Пять решений. Видимый эффект.</h2>
+        <p>Исследуйте районы и посмотрите, как ваш план меняет город.</p></div>
+      <div class="atlas-source"><span class="live-dot" aria-hidden="true"></span>Реальные границы<span>Оценки — из учебной модели</span></div>
+    </div>
+    <div class="atlas-toolbar">
+      <div class="map-modes" role="group" aria-label="Режим карты">
+        <button type="button" data-map-mode="before" aria-pressed="false">До решений</button>
+        <button type="button" data-map-mode="after" aria-pressed="true">После решений</button>
+        <button type="button" data-map-mode="delta" aria-pressed="false">Эффект <span aria-hidden="true">↗</span></button>
+      </div>
+      <div class="indicator-toggle-row"><label for="indicator-select">На карте</label><select id="indicator-select" aria-label="Показатель на карте и в карточках районов"></select></div>
+      <button type="button" id="map-play" class="map-action" aria-label="Анимированное сравнение до и после"><span aria-hidden="true">▶</span> Сравнить</button>
+    </div>
+    <div class="atlas-body">
+      <div class="map-stage">
+        <div id="city-map" aria-label="Интерактивная карта районов Астаны" aria-describedby="map-instructions"></div>
+        <div class="map-topline"><span id="map-phase" class="map-phase">ПОСЛЕ РЕШЕНИЙ</span><button type="button" id="map-home" class="map-action" title="Вернуться к обзору районов"><span aria-hidden="true">⌖</span> Обзор районов</button></div>
+        <div id="map-loading" class="map-loading" role="status">Загружаем границы Астаны…</div>
+        <div id="map-network" class="map-network" role="status" hidden>Улицы недоступны. Границы районов работают.</div>
+        <div class="map-compass" aria-hidden="true"><span>N</span><svg viewBox="0 0 24 36"><path d="M12 2 22 32 12 24Z" fill="#163946"/><path d="M12 2 2 32 12 24Z" fill="#fff"/></svg></div>
+      </div>
+      <aside class="map-insight" aria-label="Выбранный район">
+        <div class="insight-top"><span id="map-focus-label">В ФОКУСЕ</span><span class="insight-index">06 РАЙОНОВ</span></div>
+        <div id="map-district-card" aria-live="polite"><h3>Город начинается<br>с вашего решения.</h3><p>Загружаем показатели…</p></div>
+        <a class="map-plan-link" href="#left-column">Перейти к решениям <span aria-hidden="true">↗</span></a>
+      </aside>
+    </div>
+    <div class="atlas-bottom"><div id="map-legend" class="map-legend" aria-label="Легенда карты"></div><span id="map-preview-status" role="status"></span></div>
+    <div id="map-district-nav" class="map-district-nav" role="group" aria-label="Выбрать район на карте"></div>
+    <p id="map-instructions" class="map-footnote">Нажмите на район, чтобы увидеть его показатели. Цвета описывают учебный сценарий, а не реальное качество жизни. <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">Геоданные © OpenStreetMap</a>.</p>
+  </section>
+
   <main class="layout">
     <section id="left-column" class="column">
       <div class="section-heading"><span class="eyebrow">01 / ВАШ ПЛАН</span><h2>Решения для города</h2></div>
@@ -60,10 +96,6 @@
 
     <section id="center-column" class="column">
       <div class="section-heading"><span class="eyebrow">02 / ВЛИЯНИЕ</span><h2>Что изменится в районах</h2></div>
-      <div class="indicator-toggle-row">
-        <label for="indicator-select">Показатель:</label>
-        <select id="indicator-select"></select>
-      </div>
       <div id="district-tiles" class="district-tiles"></div>
       <div id="district-detail" class="district-detail" hidden></div>
       <div class="panel"><h2>Из чего складывается Score</h2><div id="score-breakdown"></div>
@@ -117,6 +149,8 @@
   </main>
 
   <footer>Учебная модель на синтетических данных. Score сравнивает сценарии внутри симулятора и не является прогнозом реального города.</footer>
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="city-map.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

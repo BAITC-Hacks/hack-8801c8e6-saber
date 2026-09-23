@@ -436,6 +436,15 @@
     return (state.lastSimulate && state.lastSimulate.result) || state.baseResult;
   }
 
+  function renderMap() {
+    globalThis.AstanaMap?.update({
+      result: currentResult(), config: state.config, districts: state.districts,
+      indicator: state.indicatorView, selectedId: state.selectedTileId,
+      pending: state.pending, error: state.previewError,
+      previewValid: !!state.lastSimulate?.result, hasErrors: !!state.lastSimulate?.errors?.length,
+    });
+  }
+
   function renderTiles() {
     const result = currentResult();
     const container = el("district-tiles");
@@ -479,11 +488,13 @@
           button.classList.toggle("selected", selected);
         });
         renderDistrictDetail();
+        renderMap();
       });
       container.appendChild(tile);
     }
 
     renderDistrictDetail();
+    renderMap();
   }
 
   function renderDistrictDetail() {
@@ -597,6 +608,7 @@
     renderHeader();
     renderCalcButton();
     el("center-column").setAttribute("aria-busy", "true");
+    renderMap();
     simulateTimer = setTimeout(runSimulate, 150);
   }
 
@@ -891,6 +903,10 @@
     state.lastSimulate = { result: stateBody.result, errors: [] };
     restoreDraft();
     renderObjective();
+    globalThis.AstanaMap?.init({ onSelect: (id) => {
+      state.selectedTileId = id;
+      renderTiles();
+    } });
 
     renderIndicatorSelect();
     renderSlots();
