@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -9,6 +10,8 @@ from app import engine, optimizer
 from app.ai import llm, prompts
 from app.data_loader import AppData
 from app.engine import Decision
+
+logger = logging.getLogger(__name__)
 
 
 class _BadAgent(ValueError):
@@ -220,7 +223,8 @@ def optimize(decisions: list[Decision], data: AppData) -> dict[str, Any]:
         agent_explanation = explanation
         agent_hyp = _hypotheses_from_trace(trace)
         ai_mode = "llm"
-    except (llm.LLMUnavailable, _BadAgent, ValueError, KeyError, TypeError):
+    except (llm.LLMUnavailable, _BadAgent, ValueError, KeyError, TypeError) as e:
+        logger.warning("agent LLM path fell back to hill_climb: %s", e)
         agent_decisions = None
         agent_score = None
         ai_mode = "fallback"
