@@ -32,7 +32,7 @@ flowchart LR
     Browser["Браузер\n(static/: HTML + JS + CSS)"] -->|HTTP/JSON| FastAPI["FastAPI\napp/main.py"]
     FastAPI --> Engine["Движок\napp/engine.py, optimizer.py\n(чистые функции, без LLM)"]
     FastAPI --> AI["AI-слой\napp/ai/"]
-    AI -->|Anthropic SDK| LLM["LLM\n(claude-haiku)"]
+    AI -->|OpenAI Responses API| LLM["LLM\n(gpt-6-luna, reasoning.effort=low)"]
     FastAPI --> DB[("SQLite\nvar/akim.db")]
     Engine -->|читает| JSON[("data/*.json\nconfig.json")]
 ```
@@ -45,7 +45,7 @@ flowchart LR
 | `app/engine.py` | `simulate()`, `validate()`, `contributions()` — формула Score дословно из спецификации |
 | `app/optimizer.py` | Детерминированный поиск: `single_swap_search()`, `hill_climb()`, `brute_force()` |
 | `app/storage.py` | SQLite: `save_scenario()`, `leaderboard()` |
-| `app/ai/llm.py` | Единственное место вызова LLM (Anthropic SDK); смена провайдера — правка только этого файла |
+| `app/ai/llm.py` | Единственное место вызова LLM (OpenAI SDK, Responses API); смена провайдера или модели — правка только этого файла / `.env` |
 | `app/ai/analyst.py` | AI-анализ сценария + шаблонный фолбэк |
 | `app/ai/agent.py` | Агент-оптимизатор с инструментами (`simulate`, `list_measures`, `get_district`) + hill_climb-фолбэк |
 | `app/ai/prompts.py` | Промпты дословно из спецификации |

@@ -1,10 +1,25 @@
-"""The only module allowed to call the LLM. Swap providers here only."""
+"""The only module allowed to call the LLM. Swap providers here only.
+
+Provider: OpenAI, Responses API (v1/responses). LLM_API_KEY holds the OpenAI
+key, LLM_MODEL an OpenAI model id (default: gpt-6-luna, a reasoning model).
+
+Why the Responses API and not Chat Completions: reasoning models in this
+family reject the `temperature` parameter outright (only the default is
+accepted), so speed/quality is steered with `reasoning.effort` instead.
+Chat Completions only allows function/tool calling when reasoning_effort is
+"none" — which defeats the point of a fast "low"-effort agent loop — while
+the Responses API supports tool calling together with any reasoning effort,
+so it is used uniformly for both complete_json and run_tools.
+"""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 from typing import Any, Callable
+
+REASONING_EFFORT = "low"
+MAX_OUTPUT_TOKENS = 2000
 
 
 class LLMUnavailable(Exception):
@@ -23,7 +38,7 @@ def _cache_key(*parts: str) -> str:
 
 
 def _model() -> str:
-    return os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
+    return os.environ.get("LLM_MODEL", "gpt-6-luna")
 
 
 def _timeout() -> float:
@@ -38,19 +53,36 @@ def _client():
     if not api_key:
         raise LLMUnavailable("LLM_API_KEY не задан")
     try:
-        import anthropic
+        import openai
     except ImportError as e:  # pragma: no cover
         raise LLMUnavailable(str(e)) from e
-    return anthropic.Anthropic(api_key=api_key, timeout=_timeout())
+    return openai.OpenAI(api_key=api_key, timeout=_timeout())
 
 
 def _extract_json(text: str) -> dict:
-    text = text.strip()
+    text = (text or "").strip()
     if text.startswith("```"):
         text = text.strip("`")
         if text.startswith("json"):
             text = text[4:]
     return json.loads(text)
+
+
+def _tool_to_responses(tool: dict) -> dict:
+    return {
+        "type": "function",
+        "name": tool["name"],
+        "description": tool.get("description", ""),
+        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+    }
+
+
+def _item_to_dict(item: Any) -> Any:
+    if hasattr(item, "to_dict"):
+        return item.to_dict()
+    if hasattr(item, "model_dump"):
+        return item.model_dump()
+    return item
 
 
 def complete_json(system: str, user: str) -> dict:
@@ -61,15 +93,14 @@ def complete_json(system: str, user: str) -> dict:
 
     try:
         client = _client()
-        resp = client.messages.create(
+        resp = client.responses.create(
             model=_model(),
-            max_tokens=1500,
-            temperature=0,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+            instructions=system,
+            input=user,
+            reasoning={"effort": REASONING_EFFORT},
+            max_output_tokens=MAX_OUTPUT_TOKENS,
         )
-        text = "".join(block.text for block in resp.content if getattr(block, "type", None) == "text")
-        data = _extract_json(text)
+        data = _extract_json(resp.output_text)
     except LLMUnavailable:
         raise
     except Exception as e:
@@ -97,56 +128,62 @@ def run_tools(
     try:
         client = _client()
         model = _model()
-        messages: list[dict] = [{"role": "user", "content": user}]
+        responses_tools = [_tool_to_responses(t) for t in tools]
+        input_items: list[Any] = [{"type": "message", "role": "user", "content": user}]
         trace: list[dict] = []
         calls = 0
         final_text = ""
 
         while True:
-            resp = client.messages.create(
+            resp = client.responses.create(
                 model=model,
-                max_tokens=1500,
-                temperature=0.3,
-                system=system,
-                tools=tools,
-                messages=messages,
+                instructions=system,
+                input=input_items,
+                tools=responses_tools,
+                reasoning={"effort": REASONING_EFFORT},
+                max_output_tokens=MAX_OUTPUT_TOKENS,
             )
-            messages.append({"role": "assistant", "content": resp.content})
+            input_items.extend(_item_to_dict(item) for item in resp.output)
 
-            tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
-            if not tool_uses:
-                final_text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+            function_calls = [item for item in resp.output if getattr(item, "type", None) == "function_call"]
+            if not function_calls:
+                final_text = resp.output_text or ""
                 break
 
-            tool_results = []
-            for tu in tool_uses:
+            for fc in function_calls:
+                name = fc.name
+                try:
+                    args = json.loads(fc.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+
                 if calls >= max_calls:
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tu.id,
-                        "content": json.dumps({"error": "лимит вызовов инструментов исчерпан"}),
+                    input_items.append({
+                        "type": "function_call_output",
+                        "call_id": fc.call_id,
+                        "output": json.dumps({"error": "лимит вызовов инструментов исчерпан"}, ensure_ascii=False),
                     })
                     continue
+
                 calls += 1
-                handler = handlers.get(tu.name)
-                output = handler(tu.input) if handler else {"error": f"неизвестный инструмент {tu.name}"}
-                trace.append({"tool": tu.name, "input": tu.input, "output": output})
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": json.dumps(output, ensure_ascii=False),
+                handler = handlers.get(name)
+                output = handler(args) if handler else {"error": f"неизвестный инструмент {name}"}
+                trace.append({"tool": name, "input": args, "output": output})
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": fc.call_id,
+                    "output": json.dumps(output, ensure_ascii=False),
                 })
-            messages.append({"role": "user", "content": tool_results})
 
             if calls >= max_calls:
-                resp2 = client.messages.create(
+                resp2 = client.responses.create(
                     model=model,
-                    max_tokens=1500,
-                    temperature=0.3,
-                    system=system,
-                    messages=messages,
+                    instructions=system,
+                    input=input_items,
+                    reasoning={"effort": REASONING_EFFORT},
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
                 )
-                final_text = "".join(b.text for b in resp2.content if getattr(b, "type", None) == "text")
+                final_text = resp2.output_text or ""
                 break
     except LLMUnavailable:
         raise
