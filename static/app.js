@@ -336,7 +336,7 @@
 
       const critical = result.critical.filter((c) => c.district_id === d.id);
       const tile = document.createElement("div");
-      tile.className = `tile tile-${colorClass}`;
+      tile.className = `tile tile-${colorClass}${state.selectedTileId === d.id ? " selected" : ""}`;
       tile.dataset.districtId = d.id;
       tile.innerHTML = `
         <div class="tile-name">${d.name}</div>
@@ -401,7 +401,7 @@
     const delta = scoreAfter - scoreBefore;
     const deltaClass = delta >= 0 ? "delta-pos" : "delta-neg";
     el("score-display").innerHTML =
-      `Score: ${fmt2(scoreBefore)} → ${fmt2(scoreAfter)} (<span class="${deltaClass}">${fmtSigned2(delta)}</span>)`;
+      `${fmt2(scoreBefore)} → ${fmt2(scoreAfter)} <span class="${deltaClass}">(${fmtSigned2(delta)})</span>`;
 
     const critEl = el("crit-counter");
     critEl.textContent = `Критических: ${state.baseNCrit} → ${result.n_crit}`;
@@ -584,12 +584,27 @@
     }
   }
 
+  const MEDALS = { 1: "🥇", 2: "🥈", 3: "🥉" };
+
   function renderLeaderboard() {
     const tbody = el("leaderboard-body");
     tbody.innerHTML = "";
+
+    if (!state.leaderboard.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.className = "leaderboard-empty";
+      td.textContent = "Пока нет ни одного сохранённого сценария — нажмите «Рассчитать и проанализировать»";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
     for (const row of state.leaderboard) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${row.rank}</td><td>${row.team}</td><td>${fmt2(row.score)}</td><td>${fmt2(row.total_cost)}</td><td>${new Date(row.created_at).toLocaleString("ru-RU")}</td>`;
+      const rankLabel = MEDALS[row.rank] ? `${MEDALS[row.rank]} ${row.rank}` : row.rank;
+      tr.innerHTML = `<td>${rankLabel}</td><td>${row.team}</td><td>${fmt2(row.score)}</td><td>${fmt2(row.total_cost)}</td><td>${new Date(row.created_at).toLocaleString("ru-RU")}</td>`;
       const detailTr = document.createElement("tr");
       detailTr.className = "leaderboard-detail";
       detailTr.hidden = true;
@@ -634,6 +649,8 @@
 
     el("btn-calc").addEventListener("click", onCalcClick);
     el("btn-agent").addEventListener("click", onAgentClick);
+
+    document.body.classList.add("app-ready");
 
     await refreshLeaderboard();
   }

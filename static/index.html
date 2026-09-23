@@ -9,20 +9,32 @@
 <body>
   <header id="header">
     <div class="header-row">
-      <h1>Аким на 5 часов</h1>
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/><path d="M9 11h.01M15 11h.01M9 15h.01M15 15h.01"/></svg>
+        </span>
+        <div>
+          <h1>Аким на 5 часов</h1>
+          <div class="brand-sub">AI-симулятор качества жизни Астаны</div>
+        </div>
+      </div>
       <label class="team-field">
         Команда
         <input id="team-input" type="text" maxlength="40" placeholder="Название команды" value="Команда 1" />
       </label>
     </div>
     <div class="header-row header-metrics">
-      <div id="budget-bar" class="budget-bar">
+      <div class="metric-chip budget-bar" id="budget-bar">
+        <span class="metric-label">Бюджет</span>
         <div class="budget-bar-track">
           <div id="budget-bar-fill" class="budget-bar-fill"></div>
         </div>
         <span id="budget-bar-label">0 / 100 усл. ед.</span>
       </div>
-      <div id="score-display" class="score-display">Score: —</div>
+      <div class="metric-chip">
+        <span class="metric-label">Score</span>
+        <div id="score-display" class="score-display">—</div>
+      </div>
       <div id="crit-counter" class="crit-counter">Критических: —</div>
     </div>
   </header>
@@ -47,7 +59,7 @@
 
     <aside id="right-column" class="column">
       <div class="panel" id="analysis-panel">
-        <h2>Анализ</h2>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 4 3 5-8"/></svg>Анализ</h2>
         <div class="chart-wrap"><canvas id="contrib-chart" height="220"></canvas></div>
         <p class="chart-caption">Вклад = насколько упадёт Score без этой меры</p>
         <div id="synergy-badges" class="badges"></div>
@@ -55,13 +67,13 @@
       </div>
 
       <div class="panel" id="agent-panel">
-        <h2>Агент</h2>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Агент</h2>
         <button id="btn-agent" class="btn btn-secondary btn-block" disabled>Найти улучшение</button>
         <div id="agent-result" class="agent-result"></div>
       </div>
 
       <div class="panel" id="leaderboard-panel">
-        <h2>Лидеры</h2>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 5H4a1 1 0 0 0-1 1v1a4 4 0 0 0 4 4M17 5h3a1 1 0 0 1 1 1v1a4 4 0 0 1-4 4"/></svg>Лидеры</h2>
         <table id="leaderboard-table" class="leaderboard-table">
           <thead>
             <tr><th>#</th><th>Команда</th><th>Score</th><th>Стоимость</th><th>Время</th></tr>
