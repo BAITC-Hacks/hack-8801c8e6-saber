@@ -647,6 +647,8 @@ body.app-ready main.layout { opacity: 1; transform: translateY(0); }
 .strategies-table .selected-strategy { background: var(--accent-soft); font-weight: 700; }
 .strategies-table th[scope="row"] { font-weight: 500; color: var(--text); font-size: 12px; }
 .strategy-detail-title { font-size: 15px; margin: 16px 0 12px; line-height: 1.5; }
+.hypothesis-item { align-items: start; flex-wrap: wrap; }
+.hypothesis-item .hypothesis-ok { white-space: normal; }
 .strategy-tradeoff { border-left: 3px solid var(--yellow); background: var(--yellow-soft); padding: 12px; border-radius: 4px; margin: 12px 0; font-size: 12px; line-height: 1.6; }
 .strategy-tradeoff p { margin: 6px 0 0; }
 #strategy-coincidence { padding: 10px; border-radius: var(--radius-sm); background: var(--panel-bg-alt); }

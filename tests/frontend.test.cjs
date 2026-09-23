@@ -19,7 +19,7 @@ function harness() {
       handlers: {},
       style: {}, dataset: {}, classList: { add() {}, toggle() {} },
       appendChild(child) { this.children.push(child); },
-      addEventListener(name, handler) { this.handlers[name] = handler; }, setAttribute() {}, querySelectorAll() { return []; } };
+      addEventListener(name, handler) { this.handlers[name] = handler; }, setAttribute() {}, querySelectorAll() { return []; }, querySelector() { return null; } };
   }
   const document = { getElementById(id) {
     if (!elements.has(id)) elements.set(id, element());

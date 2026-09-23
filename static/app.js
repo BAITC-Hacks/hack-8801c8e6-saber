@@ -667,6 +667,8 @@
     if (!context.body.strategies?.some((s) => s.objective === objective)) return;
     state.activeStrategy = objective;
     renderStrategies();
+    const selectedButton = el("strategy-options").querySelector(`button[data-objective="${objective}"]`);
+    selectedButton?.focus({ preventScroll: true });
   }
 
   function renderStrategies() {
@@ -714,9 +716,12 @@
     const hyps = hypotheses
       .map((h) => {
         const ok = h.valid;
+        const metrics = [`Score ${fmt2(h.score)}`];
+        if (typeof h.d_min === "number") metrics.push(`Мин. район ${fmt2(h.d_min)}`);
+        if (typeof h.n_crit === "number") metrics.push(`Критических ${h.n_crit}`);
         return `<li class="hypothesis-item">
           <span>${esc(h.idea)}</span>
-          <span class="${ok ? "hypothesis-ok" : "hypothesis-bad"}">${ok ? "Score " + fmt2(h.score) + " ✓" : esc(h.error || "отклонено")}</span>
+          <span class="${ok ? "hypothesis-ok" : "hypothesis-bad"}">${ok ? metrics.join(" · ") + " ✓" : esc(h.error || "отклонено")}</span>
         </li>`;
       })
       .join("");

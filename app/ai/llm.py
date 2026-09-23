@@ -68,6 +68,16 @@ def _extract_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _json_object(text: str) -> dict:
+    """Validate provider output before caching; a later user retry must stay live."""
+    if not text or not text.strip():
+        raise LLMUnavailable("LLM вернул пустой ответ")
+    data = _extract_json(text)
+    if not isinstance(data, dict):
+        raise LLMUnavailable("LLM вернул не JSON-объект")
+    return data
+
+
 def _tool_to_responses(tool: dict) -> dict:
     return {
         "type": "function",
@@ -100,14 +110,11 @@ def complete_json(system: str, user: str) -> dict:
             reasoning={"effort": REASONING_EFFORT},
             max_output_tokens=MAX_OUTPUT_TOKENS,
         )
-        data = _extract_json(resp.output_text)
+        data = _json_object(resp.output_text)
     except LLMUnavailable:
         raise
     except Exception as e:
         raise LLMUnavailable(str(e)) from e
-
-    if not isinstance(data, dict):
-        raise LLMUnavailable("LLM вернул не JSON-объект")
 
     _cache[key] = data
     return data
@@ -120,7 +127,7 @@ def run_tools(
     handlers: dict[str, Callable[[dict], Any]],
     max_calls: int,
 ) -> tuple[str, list[dict]]:
-    """Agentic loop: the model may call tools up to max_calls times, then must answer with text."""
+    """Agentic loop ending in a JSON object; invalid output raises without caching."""
     key = _cache_key("run_tools", system, user, json.dumps(tools, sort_keys=True), str(max_calls))
     if key in _cache:
         return _cache[key]
@@ -185,6 +192,7 @@ def run_tools(
                 )
                 final_text = resp2.output_text or ""
                 break
+        _json_object(final_text)
     except LLMUnavailable:
         raise
     except Exception as e:

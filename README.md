@@ -8,7 +8,7 @@
 
 ![Симулятор: план, районы и советник](docs/screenshots/overview.png)
 
-[Полный экран со сравнением](docs/screenshots/desktop.png) · [Мобильный интерфейс](docs/screenshots/mobile.png) · [Протокол проверки](docs/VALIDATION.md)
+[Сравнение трёх стратегий](docs/screenshots/strategies-desktop.png) · [Стратегии на телефоне](docs/screenshots/strategies-mobile.png) · [Протокол проверки](docs/VALIDATION.md)
 
 ## 2. Быстрый старт
 
@@ -80,7 +80,7 @@ flowchart LR
 | `app/ai/llm.py` | Единственное место вызова LLM (OpenAI SDK, Responses API); смена провайдера или модели — правка только этого файла / `.env` |
 | `app/ai/analyst.py` | AI-анализ сценария + шаблонный фолбэк |
 | `app/ai/agent.py` | Агент-оптимизатор с инструментами (`simulate`, `list_measures`, `get_district`) + hill_climb-фолбэк |
-| `app/ai/prompts.py` | Промпты дословно из спецификации |
+| `app/ai/prompts.py` | Промпт аналитика из спецификации; промпт агента дополнен выбранной целью и закреплениями |
 
 ## 5. Модель расчёта
 
@@ -181,6 +181,8 @@ Score         = 0.7 × D_avg + 0.3 × min(D_район) − 1.0 × N_crit
 
 **Фолбэк без LLM** срабатывает, если нет `LLM_API_KEY`, вызов упал (`LLMUnavailable`) или ответ не прошёл проверку — в любом случае API отвечает `200`, а не `5xx`, с `ai_mode: "fallback"`.
 
+Пустой, повреждённый или не содержащий JSON-объект ответ провайдера не кэшируется: следующий запуск снова обращается к AI. Объяснение итоговой стратегии строится по пересчитанным движком показателям; идеи AI показываются отдельно в журнале гипотез.
+
 ## 7. Проверка требований
 
 | Требование | Как проверить |
@@ -192,7 +194,7 @@ Score         = 0.7 × D_avg + 0.3 × min(D_район) − 1.0 × N_crit
 | AC5: порядок решений не важен | `tests/test_engine.py::test_order_independent` (120 перестановок) |
 | AC6: замена решения меняет Score | `tests/test_engine.py::test_sensitivity` (117 вариантов, допуск 1e-9) |
 | AC7: `POST /api/scenario` даёт `strengths/risks/consequences/main_tradeoff` | `tests/test_api.py::test_scenario_example` |
-| AC8: `POST /api/optimize` не хуже исходного + лог гипотез | `tests/test_api.py::test_optimize_example` |
+| AC8: `POST /api/optimize` не хуже исходного по выбранной цели + лог гипотез | `tests/test_api.py::test_optimize_example`, `tests/test_objectives.py`; по умолчанию цель — Score |
 | AC9: без `LLM_API_KEY` всё работает, `ai_mode: "fallback"` | `tests/test_ai_fallback.py`, `docker compose up` с пустым `LLM_API_KEY` |
 | AC10: pytest проходит | `docker compose run --rm app pytest` |
 | AC11: README содержит все разделы | этот файл |
@@ -229,7 +231,7 @@ $ docker compose run --rm app python scripts/brute_force.py
 docker compose run --rm app pytest
 ```
 
-Проверено **53 Python-теста и 7 тестов фронтенда**. Для фронтенд-тестов нужен Node.js 22+, без npm-пакетов:
+Проверено **107 Python-тестов и 12 тестов фронтенда**. Для фронтенд-тестов нужен Node.js 22+, без npm-пакетов:
 
 ```bash
 node --test tests/frontend.test.cjs
@@ -242,6 +244,7 @@ node --test tests/frontend.test.cjs
 - `tests/test_ai_fallback.py` — `llm.py` подменяется моками (исключение и невалидный JSON); проверяется, что API всегда отвечает 200 с `ai_mode: "fallback"`, а агент при нарушающем правила ответе LLM возвращает результат `hill_climb`.
 - `tests/test_constraints.py` — закрепления, попытки AI изменить меру или район, неверные типы ответов, неверный слабейший район, успешный повторный анализ и разложение формулы Score.
 - `tests/test_objectives.py` — выбор по разным целям, допустимость всех трёх стратегий, закрепления, совместимость прежнего API, отказ от неподходящих AI-предложений и честные компромиссы Score.
+- `tests/test_llm_cache.py` — невалидные ответы не остаются в кэше, явная повторная попытка обращается к провайдеру, валидный JSON и журнал инструментов кэшируются.
 - `tests/frontend.test.cjs` — ответы в обратном порядке, устаревший анализ и оптимизация, ошибки сети, блокировка повторных запросов, безопасный вывод текста, сохранение закреплений, цели и отмены; просмотр и применение альтернативы, смена цели во время запроса и защита от устаревшей кнопки применения.
 
 ## 10. Ограничения
