@@ -55,6 +55,26 @@ def test_simulate_partial_two_decisions(client):
     assert body["result"] is not None
 
 
+def test_simulate_district_required_gives_null_result(client):
+    decisions = [{"measure_id": "M7", "district_id": None}]
+    r = client.post("/api/simulate", json={"decisions": decisions})
+    assert r.status_code == 200
+    body = r.json()
+    codes = {e["code"] for e in body["errors"]}
+    assert "DISTRICT_REQUIRED" in codes
+    assert body["result"] is None
+
+
+def test_simulate_unknown_measure_gives_null_result(client):
+    decisions = [{"measure_id": "M99", "district_id": None}]
+    r = client.post("/api/simulate", json={"decisions": decisions})
+    assert r.status_code == 200
+    body = r.json()
+    codes = {e["code"] for e in body["errors"]}
+    assert "UNKNOWN_MEASURE" in codes
+    assert body["result"] is None
+
+
 def test_scenario_over_budget_is_422(client):
     r = client.post("/api/scenario", json={"team": "Команда OVER", "decisions": OVER})
     assert r.status_code == 422
