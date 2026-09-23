@@ -1,10 +1,78 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <title>Аким на 5 часов</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Аким на 5 часов</title>
+<link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <p>Строится...</p>
+  <header id="header">
+    <div class="header-row">
+      <h1>Аким на 5 часов</h1>
+      <label class="team-field">
+        Команда
+        <input id="team-input" type="text" maxlength="40" placeholder="Название команды" value="Команда 1" />
+      </label>
+    </div>
+    <div class="header-row header-metrics">
+      <div id="budget-bar" class="budget-bar">
+        <div class="budget-bar-track">
+          <div id="budget-bar-fill" class="budget-bar-fill"></div>
+        </div>
+        <span id="budget-bar-label">0 / 100 усл. ед.</span>
+      </div>
+      <div id="score-display" class="score-display">Score: —</div>
+      <div id="crit-counter" class="crit-counter">Критических: —</div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section id="left-column" class="column">
+      <p class="hint">Выберите 5 мер на 100 усл. ед. Score — это 70% среднего по городу, 30% самого слабого района и −1 за каждый показатель ниже 40.</p>
+      <div id="direction-counters" class="direction-counters"></div>
+      <div id="slots" class="slots"></div>
+      <button id="btn-calc" class="btn btn-primary btn-block" disabled>Рассчитать и проанализировать</button>
+      <div id="calc-errors" class="calc-errors"></div>
+    </section>
+
+    <section id="center-column" class="column">
+      <div class="indicator-toggle-row">
+        <label for="indicator-select">Показатель:</label>
+        <select id="indicator-select"></select>
+      </div>
+      <div id="district-tiles" class="district-tiles"></div>
+      <div id="district-detail" class="district-detail" hidden></div>
+    </section>
+
+    <aside id="right-column" class="column">
+      <div class="panel" id="analysis-panel">
+        <h2>Анализ</h2>
+        <div class="chart-wrap"><canvas id="contrib-chart" height="220"></canvas></div>
+        <p class="chart-caption">Вклад = насколько упадёт Score без этой меры</p>
+        <div id="synergy-badges" class="badges"></div>
+        <div id="analysis-result" class="analysis-result"></div>
+      </div>
+
+      <div class="panel" id="agent-panel">
+        <h2>Агент</h2>
+        <button id="btn-agent" class="btn btn-secondary btn-block" disabled>Найти улучшение</button>
+        <div id="agent-result" class="agent-result"></div>
+      </div>
+
+      <div class="panel" id="leaderboard-panel">
+        <h2>Лидеры</h2>
+        <table id="leaderboard-table" class="leaderboard-table">
+          <thead>
+            <tr><th>#</th><th>Команда</th><th>Score</th><th>Стоимость</th><th>Время</th></tr>
+          </thead>
+          <tbody id="leaderboard-body"></tbody>
+        </table>
+      </div>
+    </aside>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
