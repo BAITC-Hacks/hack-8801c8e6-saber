@@ -3,6 +3,11 @@
 
   let SLOT_COUNT = 5;
   const DRAFT_KEY = "akim-draft-v1";
+  const OBJECTIVES = {
+    score: { label: "Максимальный Score", short: "Score", description: "Приоритет — общий Score города. Итоговый балл не станет ниже вашего плана." },
+    weakest: { label: "Поддержка слабейшего района", short: "Слабейший район", description: "Приоритет — наибольший балл самого слабого района после решений. При равенстве выбираем больший Score. Общий Score может снизиться." },
+    critical: { label: "Меньше критических показателей", short: "Критические", description: "Сначала сокращаем число показателей ниже 40, при равенстве выбираем больший Score. Общий Score может снизиться." },
+  };
   const EXAMPLE = [
     { measureId: "M7", districtId: "nura" }, { measureId: "M8", districtId: "nura" },
     { measureId: "M10", districtId: "nura" }, { measureId: "M12", districtId: "" },
@@ -29,6 +34,10 @@
     undo: [],
     simulateController: null,
     ready: false,
+    objective: "score",
+    optimizationEpoch: 0,
+    optimization: null,
+    activeStrategy: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -43,7 +52,7 @@
 
   function saveDraft() {
     try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ slots: state.slots, team: el("team-input").value }));
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ slots: state.slots, team: el("team-input").value, objective: state.objective }));
       el("draft-status").textContent = "Черновик сохранён в этом браузере";
     } catch {
       el("draft-status").textContent = "Автосохранение недоступно в этом браузере";
@@ -58,6 +67,7 @@
         (!s.measureId || state.measuresById[s.measureId]) && (!s.districtId || state.districtsById[s.districtId]))) return;
       state.slots = draft.slots.map((s) => ({ measureId: s.measureId, districtId: s.districtId, locked: s.locked === true && completeSlot(s) }));
       if (typeof draft.team === "string") el("team-input").value = draft.team.slice(0, 40);
+      if (Object.hasOwn(OBJECTIVES, draft.objective)) state.objective = draft.objective;
       el("draft-status").textContent = "Черновик восстановлен";
     } catch { /* Ignore an unavailable or obsolete local draft. */ }
   }
@@ -71,6 +81,30 @@
     const m = state.measuresById[d.measure_id];
     const district = state.districtsById[d.district_id];
     return `${m ? m.name : d.measure_id}${district ? " · " + district.name : " · весь город"}`;
+  }
+
+  function clearOptimization() {
+    state.optimizationEpoch += 1;
+    state.optimization = null;
+    state.activeStrategy = null;
+    delete state.busy.agent;
+    el("agent-result").textContent = "";
+    el("strategies-panel").hidden = true;
+  }
+
+  function renderObjective() {
+    el("objective-select").value = state.objective;
+    el("objective-help").textContent = OBJECTIVES[state.objective].description;
+  }
+
+  function changeObjective(objective) {
+    if (!Object.hasOwn(OBJECTIVES, objective) || objective === state.objective) return;
+    state.objective = objective;
+    clearOptimization();
+    renderObjective();
+    saveDraft();
+    renderCalcButton();
+    el("agent-result").innerHTML = '<p class="empty-state">Цель изменена. Сравните стратегии заново — советник учтёт новый приоритет.</p>';
   }
 
   function fmt2(n) {
@@ -510,7 +544,7 @@
     const lockedCount = state.slots.filter((s) => s.locked).length;
     el("btn-agent").disabled = !ok || lockedCount === SLOT_COUNT;
     el("btn-calc").textContent = state.busy.calc === state.revision ? "Анализируем…" : "Рассчитать и проанализировать";
-    el("btn-agent").textContent = state.busy.agent === state.revision ? "Проверяем варианты…" : "Найти улучшение";
+    el("btn-agent").textContent = state.busy.agent === state.revision ? "Сравниваем стратегии…" : "Сравнить стратегии";
     el("btn-undo").disabled = state.undo.length === 0;
     el("lock-summary").textContent = lockedCount === SLOT_COUNT ? "Все решения закреплены. Снимите хотя бы одно закрепление для поиска." : `Закреплено ${lockedCount} из ${SLOT_COUNT}. Советник сохранит эти меры и районы.`;
 
@@ -533,7 +567,7 @@
     state.previewError = false;
     state.lastSimulate = null;
     el("analysis-result").innerHTML = '<p class="empty-state">План изменён. Запустите анализ для текущих решений.</p>';
-    el("agent-result").textContent = "";
+    clearOptimization();
     el("app-status").textContent = "Проверяем текущий план…";
     el("btn-retry").hidden = true;
     saveDraft();
@@ -621,9 +655,63 @@
     }
   }
 
-  function renderAgentResult(body, originalDecisions, revision) {
+  function renderAgentResult(body, originalDecisions, revision, epoch = state.optimizationEpoch) {
+    state.optimization = { body, originalDecisions, revision, epoch };
+    state.activeStrategy = body.objective || "score";
+    renderStrategies();
+  }
+
+  function selectStrategy(objective) {
+    const context = state.optimization;
+    if (!context || context.revision !== state.revision || context.epoch !== state.optimizationEpoch) return;
+    if (!context.body.strategies?.some((s) => s.objective === objective)) return;
+    state.activeStrategy = objective;
+    renderStrategies();
+  }
+
+  function renderStrategies() {
+    const context = state.optimization;
+    if (!context) return;
+    const { body, originalDecisions, revision, epoch } = context;
+    const strategies = body.strategies || [{ objective: body.objective || "score", decisions: body.best_decisions, result: body.best_result, source: body.source, explanation: body.explanation }];
+    const selected = strategies.find((s) => s.objective === state.activeStrategy) || strategies[0];
+    const before = body.original_result;
+    el("strategies-panel").hidden = false;
+    el("strategy-options").innerHTML = strategies.map((s) => `<button type="button" class="strategy-option" data-objective="${esc(s.objective)}" aria-pressed="${s.objective === selected.objective}">${esc(OBJECTIVES[s.objective].label)}</button>`).join("");
+    el("strategy-options").querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", () => selectStrategy(button.dataset.objective));
+    });
+    const metrics = [
+      { label: "Score", key: "score_after", format: fmt2, higher: true },
+      { label: "Слабейший район: балл", key: "d_min", format: fmt2, higher: true },
+      { label: "Критических значений", key: "n_crit", format: String, higher: false },
+      { label: "Бюджет", key: "total_cost", format: fmt2 },
+    ];
+    el("strategies-comparison").innerHTML = `<div class="table-scroll"><table class="comparison strategies-table"><caption>Один исходный план и одинаковые закрепления</caption><thead><tr><th scope="col">Показатель</th><th scope="col">Ваш план</th>${strategies.map((s) => `<th scope="col" class="${s.objective === selected.objective ? "selected-strategy" : ""}">${esc(OBJECTIVES[s.objective].short)}</th>`).join("")}</tr></thead><tbody>${metrics.map((m) => `<tr><th scope="row">${m.label}</th><td>${m.format(before[m.key])}</td>${strategies.map((s) => {
+      const value = s.result[m.key];
+      const changed = value !== before[m.key];
+      const better = m.higher ? value > before[m.key] : value < before[m.key];
+      const tone = changed && m.higher !== undefined ? (better ? "delta-pos" : "delta-neg") : "";
+      return `<td class="${tone} ${s.objective === selected.objective ? "selected-strategy" : ""}">${m.format(value)}</td>`;
+    }).join("")}</tr>`).join("")}</tbody></table></div>`;
+    const groups = new Map();
+    for (const strategy of strategies) {
+      const key = JSON.stringify(strategy.decisions.map((d) => `${d.measure_id}@${d.district_id || ""}`).sort());
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(OBJECTIVES[strategy.objective].label);
+    }
+    const identical = [...groups.values()].filter((names) => names.length > 1);
+    el("strategy-coincidence").textContent = identical.length ? `Совпали планы: ${identical.map((names) => names.map((n) => `«${n}»`).join(" и ")).join("; ")}. Разные цели могут приводить к одному набору решений.` : "Каждая цель привела к своему набору решений.";
+    const requestedLabel = OBJECTIVES[body.objective || "score"].label;
+    el("strategy-search-note").textContent = `${body.ai_mode === "llm" ? `AI участвовал в поиске для цели «${requestedLabel}».` : "Сравнение рассчитано без LLM."} Все три стратегии проверены движком. Поиск локальный: глобальный оптимум не гарантирован. Суммы и баллы округлены.`;
+    renderStrategyDetail(body, originalDecisions, revision, epoch, selected);
+  }
+
+  function renderStrategyDetail(body, originalDecisions, revision, epoch, strategy) {
     const box = el("agent-result");
-    const hyps = (body.hypotheses || [])
+    const isRequested = strategy.objective === (body.objective || "score");
+    const hypotheses = isRequested ? body.hypotheses || [] : [];
+    const hyps = hypotheses
       .map((h) => {
         const ok = h.valid;
         return `<li class="hypothesis-item">
@@ -632,11 +720,15 @@
         </li>`;
       })
       .join("");
-    const delta = body.delta;
-    const removed = originalDecisions.filter((d) => !body.best_decisions.some((best) => sameDecision(d, best)));
-    const added = body.best_decisions.filter((d) => !originalDecisions.some((original) => sameDecision(d, original)));
+    const removed = originalDecisions.filter((d) => !strategy.decisions.some((best) => sameDecision(d, best)));
+    const added = strategy.decisions.filter((d) => !originalDecisions.some((original) => sameDecision(d, original)));
     const before = body.original_result;
-    const after = body.best_result;
+    const after = strategy.result;
+    const tradeoffs = [];
+    if (after.score_after < before.score_after) tradeoffs.push(`Score ниже вашего плана: ${fmt2(before.score_after)} → ${fmt2(after.score_after)}.`);
+    if (after.n_crit > before.n_crit) tradeoffs.push(`Критических значений станет больше: ${before.n_crit} → ${after.n_crit}.`);
+    if (after.d_min < before.d_min) tradeoffs.push(`Балл слабейшего района снизится: ${fmt2(before.d_min)} → ${fmt2(after.d_min)}.`);
+    const explanation = strategy.explanation || (isRequested ? body.explanation : OBJECTIVES[strategy.objective].description);
     const rows = [
       ["Score", before.score_after, after.score_after],
       ["Бюджет", before.total_cost, after.total_cost],
@@ -645,16 +737,22 @@
       ...before.districts.map((d) => [d.name, d.d_after, after.districts.find((best) => best.id === d.id).d_after]),
     ];
     box.innerHTML = `
-      <span class="badge ${body.source === "baseline" ? "badge-fallback" : ""}">${body.source === "agent" ? "Предложение AI" : "Детерминированный поиск"} · проверено движком</span>
-      <p><strong>${fmt2(body.original_score)} → ${fmt2(body.best_score)} (${fmtSigned2(delta)})</strong></p>
+      <h3 class="strategy-detail-title">${esc(OBJECTIVES[strategy.objective].label)}</h3>
+      <span class="badge ${strategy.source === "baseline" ? "badge-fallback" : ""}">${strategy.source === "agent" ? "Предложение AI" : "Детерминированный поиск"} · проверено движком</span>
+      <p><strong>Score: ${fmt2(before.score_after)} → ${fmt2(after.score_after)}</strong></p>
+      ${tradeoffs.length ? `<div class="strategy-tradeoff"><strong>Цена выбранного приоритета</strong><p>${tradeoffs.map(esc).join(" ")}</p></div>` : ""}
       <div class="table-scroll"><table class="comparison"><caption>Ваш план и предложение</caption><thead><tr><th>Показатель</th><th>Ваш план</th><th>Предложение</th></tr></thead><tbody>${rows.map(([name, a, b]) => `<tr><td>${esc(name)}</td><td>${fmt2(a)}</td><td>${fmt2(b)}</td></tr>`).join("")}</tbody></table></div>
       ${removed.length ? `<div class="decision-diff"><h3>Убрать</h3><ul>${removed.map((d) => `<li>${esc(decisionLabel(d))}</li>`).join("")}</ul><h3>Добавить</h3><ul>${added.map((d) => `<li>${esc(decisionLabel(d))}</li>`).join("")}</ul></div>` : '<p>Текущий план сохранён: улучшение не найдено.</p>'}
-      <p>${esc(body.explanation)}</p>
-      <details><summary>Проверенные шаги поиска (${(body.hypotheses || []).length})</summary><ul class="hypothesis-list">${hyps || '<li>Нет шагов с улучшением.</li>'}</ul></details>
-      <button id="btn-apply" class="btn btn-primary btn-block" ${removed.length ? "" : "disabled"}>Применить предложение</button>
+      <p>${esc(explanation)}</p>
+      ${isRequested ? `<details><summary>Проверенные шаги поиска (${hypotheses.length})</summary><ul class="hypothesis-list">${hyps || '<li>Нет шагов с улучшением.</li>'}</ul></details>` : '<p class="muted">Этот вариант найден обычным поиском. Для участия AI в поиске по этой цели выберите её выше и сравните стратегии заново.</p>'}
+      <button id="btn-apply" class="btn btn-primary btn-block" ${removed.length ? "" : "disabled"}>Применить эту стратегию</button>
     `;
     el("btn-apply").addEventListener("click", () => {
-      if (revision === state.revision) applyDecisions(body.best_decisions);
+      if (revision === state.revision && epoch === state.optimizationEpoch) {
+        state.objective = strategy.objective;
+        renderObjective();
+        applyDecisions(strategy.decisions);
+      }
     });
   }
 
@@ -669,19 +767,21 @@
   async function onAgentClick() {
     if (el("btn-agent").disabled) return;
     const revision = state.revision;
+    clearOptimization();
+    const epoch = state.optimizationEpoch;
     state.busy.agent = revision;
     renderCalcButton();
     try {
       const decisions = state.slots.map((s) => ({ measure_id: s.measureId, district_id: s.districtId || null }));
       const locked_decisions = decisionsOf(state.slots.filter((s) => s.locked));
-      const body = await api("/api/optimize", "POST", { decisions, locked_decisions });
-      if (revision !== state.revision) return;
-      renderAgentResult(body, decisions, revision);
+      const body = await api("/api/optimize", "POST", { decisions, locked_decisions, objective: state.objective });
+      if (revision !== state.revision || epoch !== state.optimizationEpoch) return;
+      renderAgentResult(body, decisions, revision, epoch);
     } catch (e) {
-      if (revision !== state.revision) return;
+      if (revision !== state.revision || epoch !== state.optimizationEpoch) return;
       el("agent-result").innerHTML = `<p class="error-text">Не удалось получить ответ, попробуйте ещё раз.</p>`;
     } finally {
-      if (state.busy.agent === revision) delete state.busy.agent;
+      if (state.busy.agent === revision && epoch === state.optimizationEpoch) delete state.busy.agent;
       renderCalcButton();
     }
   }
@@ -754,6 +854,7 @@
     state.baseNCrit = stateBody.result.n_crit;
     state.lastSimulate = { result: stateBody.result, errors: [] };
     restoreDraft();
+    renderObjective();
 
     renderIndicatorSelect();
     renderSlots();
@@ -765,6 +866,7 @@
 
     el("btn-calc").onclick = onCalcClick;
     el("btn-agent").onclick = onAgentClick;
+    el("objective-select").onchange = (event) => changeObjective(event.target.value);
     el("team-input").oninput = saveDraft;
     el("btn-example").onclick = () => {
       remember();

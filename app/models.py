@@ -1,7 +1,7 @@
 """Pydantic v2 request/response schemas (section 6 of spec.md)."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,7 @@ class ScenarioRequest(BaseModel):
 class OptimizeRequest(BaseModel):
     decisions: list[DecisionIn] = Field(default_factory=list)
     locked_decisions: list[DecisionIn] = Field(default_factory=list, max_length=5)
+    objective: Literal["score", "weakest", "critical"] = "score"
 
 
 class HealthOut(BaseModel):

@@ -2,10 +2,48 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any
+from typing import Any, Literal
 
 from app.data_loader import AppData
 from app.engine import Decision, simulate, validate
+
+Objective = Literal["score", "weakest", "critical"]
+OBJECTIVES: dict[Objective, dict[str, str]] = {
+    "score": {
+        "label": "Максимальный Score",
+        "description": "Максимизировать общий Score.",
+    },
+    "weakest": {
+        "label": "Поддержка слабейшего района",
+        "description": "Сначала повысить минимальный балл среди всех районов; при равенстве — общий Score.",
+    },
+    "critical": {
+        "label": "Меньше критических показателей",
+        "description": "Сначала сократить число показателей ниже критического порога; при равенстве — повысить Score.",
+    },
+}
+COMPARISON_TOLERANCE = 1e-9
+
+
+def objective_values(result: dict[str, Any], objective: Objective = "score") -> tuple[float, ...]:
+    """Unrounded values to maximize, ordered by lexicographic priority."""
+    if objective == "score":
+        return (result["score_after"],)
+    if objective == "weakest":
+        return (result["d_min"], result["score_after"])
+    if objective == "critical":
+        return (-result["n_crit"], result["score_after"])
+    raise ValueError(f"Unknown objective: {objective}")
+
+
+def compare_results(left: dict[str, Any], right: dict[str, Any], objective: Objective = "score") -> int:
+    """Compare raw engine results with one tolerance for search and agent arbitration."""
+    for a, b in zip(objective_values(left, objective), objective_values(right, objective)):
+        if a > b + COMPARISON_TOLERANCE:
+            return 1
+        if a < b - COMPARISON_TOLERANCE:
+            return -1
+    return 0
 
 
 def all_options(data: AppData) -> list[Decision]:
@@ -20,11 +58,11 @@ def all_options(data: AppData) -> list[Decision]:
     return options
 
 
-def single_swap_search(decisions: list[Decision], data: AppData, locked_decisions: list[Decision] | None = None) -> tuple[list[Decision] | None, float | None]:
-    """Tries replacing each decision with every other option; returns the best valid result."""
+def _single_swap_result(decisions: list[Decision], data: AppData, locked_decisions: list[Decision] | None, objective: Objective) -> tuple[list[Decision] | None, dict | None]:
+    """Try every valid single replacement while retaining each locked measure and district."""
     options = all_options(data)
     best_decisions: list[Decision] | None = None
-    best_score: float | None = None
+    best_result: dict | None = None
 
     for i in range(len(decisions)):
         if decisions[i] in (locked_decisions or []):
@@ -36,35 +74,51 @@ def single_swap_search(decisions: list[Decision], data: AppData, locked_decision
             candidate[i] = option
             if validate(candidate, data):
                 continue
-            score = simulate(candidate, data, _with_contributions=False)["score_after"]
-            if best_score is None or score > best_score:
-                best_score = score
+            result = simulate(candidate, data, _with_contributions=False)
+            if best_result is None or compare_results(result, best_result, objective) > 0:
+                best_result = result
                 best_decisions = candidate
 
-    return best_decisions, best_score
+    return best_decisions, best_result
 
 
-def hill_climb(decisions: list[Decision], data: AppData, max_rounds: int = 5, *, locked_decisions: list[Decision] | None = None) -> dict[str, Any]:
+def single_swap_search(decisions: list[Decision], data: AppData, locked_decisions: list[Decision] | None = None, *, objective: Objective = "score") -> tuple[list[Decision] | None, float | None]:
+    """Return the best valid single swap and its Score (legacy return shape)."""
+    candidate, result = _single_swap_result(decisions, data, locked_decisions, objective)
+    return candidate, result["score_after"] if result is not None else None
+
+
+def hill_climb(decisions: list[Decision], data: AppData, max_rounds: int = 5, *, locked_decisions: list[Decision] | None = None, objective: Objective = "score") -> dict[str, Any]:
+    """At most five improving single swaps by default; no global-optimum guarantee.
+
+    The original scenario is always a candidate. Only the chosen objective must
+    improve: a better minimum district score or fewer critical indicators can
+    justify a lower total Score. Ties retain the existing deterministic order.
+    """
     current = list(decisions)
-    current_score = simulate(current, data, _with_contributions=False)["score_after"]
+    current_result = simulate(current, data, _with_contributions=False)
+    objective_values(current_result, objective)  # Reject unsupported direct calls too.
     steps: list[dict] = []
 
     for _ in range(max_rounds):
-        candidate, cand_score = single_swap_search(current, data, locked_decisions)
-        if candidate is None or cand_score is None:
+        candidate, candidate_result = _single_swap_result(current, data, locked_decisions, objective)
+        if candidate is None or candidate_result is None:
             break
-        if cand_score - current_score > 1e-9:
+        if compare_results(candidate_result, current_result, objective) > 0:
             steps.append({
                 "from": [{"measure_id": d.measure_id, "district_id": d.district_id} for d in current],
                 "to": [{"measure_id": d.measure_id, "district_id": d.district_id} for d in candidate],
-                "score": cand_score,
+                "score": candidate_result["score_after"],
+                "d_min": candidate_result["d_min"],
+                "n_crit": candidate_result["n_crit"],
+                "objective_values": objective_values(candidate_result, objective),
             })
             current = candidate
-            current_score = cand_score
+            current_result = candidate_result
         else:
             break
 
-    return {"decisions": current, "score": current_score, "steps": steps}
+    return {"decisions": current, "score": current_result["score_after"], "result": current_result, "steps": steps, "objective": objective}
 
 
 def brute_force(data: AppData) -> dict[str, Any]:

@@ -638,6 +638,18 @@ body.app-ready main.layout { opacity: 1; transform: translateY(0); }
 .eyebrow { display: block; font-size: 10px; letter-spacing: .12em; color: var(--accent-dark); font-weight: 700; margin-bottom: 7px; }
 .section-heading h2 { font-size: 17px; }
 .column { min-width: 0; }
+.objective-label { display: block; margin: 14px 0 6px; font-size: 12px; font-weight: 700; }
+.objective-select { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--panel-bg-alt); color: var(--text); font: inherit; font-size: 12px; }
+.strategy-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 16px 0; }
+.strategy-option { padding: 10px 6px; min-height: 64px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--panel-bg-alt); cursor: pointer; font: inherit; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.strategy-option[aria-pressed="true"] { color: var(--accent-dark); background: var(--accent-soft); border-color: var(--accent); font-weight: 700; }
+.strategies-table { min-width: 410px; }
+.strategies-table .selected-strategy { background: var(--accent-soft); font-weight: 700; }
+.strategies-table th[scope="row"] { font-weight: 500; color: var(--text); font-size: 12px; }
+.strategy-detail-title { font-size: 15px; margin: 16px 0 12px; line-height: 1.5; }
+.strategy-tradeoff { border-left: 3px solid var(--yellow); background: var(--yellow-soft); padding: 12px; border-radius: 4px; margin: 12px 0; font-size: 12px; line-height: 1.6; }
+.strategy-tradeoff p { margin: 6px 0 0; }
+#strategy-coincidence { padding: 10px; border-radius: var(--radius-sm); background: var(--panel-bg-alt); }
 .indicator-toggle-row select { min-width: 0; flex: 1; }
 .slot { padding: 12px; }
 .slot-title { position: static; width: auto; height: auto; border-radius: 0; background: none; margin-bottom: 10px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }

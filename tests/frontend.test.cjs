@@ -16,21 +16,23 @@ function harness() {
   const elements = new Map();
   function element() {
     return { innerHTML: '', textContent: '', value: 'Test', children: [], disabled: false,
+      handlers: {},
       style: {}, dataset: {}, classList: { add() {}, toggle() {} },
       appendChild(child) { this.children.push(child); },
-      addEventListener() {}, setAttribute() {}, querySelectorAll() { return []; } };
+      addEventListener(name, handler) { this.handlers[name] = handler; }, setAttribute() {}, querySelectorAll() { return []; } };
   }
   const document = { getElementById(id) {
     if (!elements.has(id)) elements.set(id, element());
     return elements.get(id);
   }, createElement: element, addEventListener() {}, body: element() };
   const requests = [];
+  const drafts = new Map();
   const context = vm.createContext({ document, console, AbortController,
-    setTimeout() { return 1; }, clearTimeout() {}, localStorage: { setItem() {} },
-    fetch(url) { const request = deferred(); requests.push({ url, ...request }); return request.promise; },
+    setTimeout() { return 1; }, clearTimeout() {}, localStorage: { setItem(key, value) { drafts.set(key, value); }, getItem(key) { return drafts.get(key) || null; } },
+    fetch(url, options) { const request = deferred(); requests.push({ url, options, ...request }); return request.promise; },
   });
   let source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
-  source = source.replace(/\}\)\(\);\s*$/, `globalThis.ui = { state, runSimulate, scheduleSimulate, renderCalcButton, renderAnalysis, renderLeaderboard, renderAgentResult, onCalcClick, onAgentClick, applyDecisions }; })();`);
+  source = source.replace(/\}\)\(\);\s*$/, `globalThis.ui = { state, runSimulate, scheduleSimulate, renderCalcButton, renderAnalysis, renderLeaderboard, renderAgentResult, onCalcClick, onAgentClick, applyDecisions, changeObjective, selectStrategy, restoreDraft }; })();`);
   vm.runInContext(source, context);
   const ui = context.ui;
   const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json')));
@@ -46,7 +48,7 @@ function harness() {
     lastSimulate: { result: base, errors: [] },
   });
   const reply = (request, body) => request.resolve({ ok: true, json: async () => body });
-  return { ui, elements, el: document.getElementById, requests, base, reply };
+  return { ui, elements, el: document.getElementById, requests, base, reply, drafts };
 }
 
 test('out-of-order previews cannot overwrite a newer scenario', async () => {
@@ -134,4 +136,93 @@ test('applying improvement retains locks and an undo snapshot', () => {
   assert.equal(ui.state.slots[0].locked, true);
   assert.equal(ui.state.slots[4].measureId, 'M3');
   assert.equal(JSON.stringify(ui.state.undo[0]), original);
+});
+
+function strategyResponse(ui, base) {
+  const original = ui.state.slots.map((s) => ({measure_id: s.measureId, district_id: s.districtId || null}));
+  const scorePlan = original.map((d, i) => i === 4 ? {measure_id: 'M3', district_id: 'nura'} : d);
+  const weakPlan = scorePlan.map((d, i) => i === 0 ? {measure_id: 'M4', district_id: 'nura'} : d);
+  return { objective: 'score', original_result: base, hypotheses: [], explanation: 'Test',
+    strategies: [
+      {objective: 'score', decisions: scorePlan, result: {...base, score_after: 57.21, d_min: 55.1}, source: 'agent'},
+      {objective: 'weakest', decisions: weakPlan, result: {...base, score_after: 55.43, d_min: 55.5, n_crit: 2}, source: 'baseline'},
+      {objective: 'critical', decisions: scorePlan, result: {...base, score_after: 57.21, d_min: 55.1}, source: 'baseline'},
+    ],
+  };
+}
+
+test('selected objective is sent to server and survives draft restoration', async () => {
+  const { ui, requests, drafts, reply } = harness();
+  ui.changeObjective('critical');
+  assert.equal(JSON.parse(drafts.get('akim-draft-v1')).objective, 'critical');
+  ui.state.objective = 'score';
+  ui.restoreDraft();
+  assert.equal(ui.state.objective, 'critical');
+  const run = ui.onAgentClick();
+  assert.equal(JSON.parse(requests[0].options.body).objective, 'critical');
+  ui.changeObjective('weakest');
+  reply(requests[0], {objective:'critical'});
+  await run;
+  assert.equal(ui.state.optimization, null);
+});
+
+test('goal changes invalidate optimization without discarding valid analysis or preview', async () => {
+  const { ui, requests, reply, el } = harness();
+  const preview = ui.state.lastSimulate;
+  el('analysis-result').innerHTML = 'Current valid analysis';
+  const run = ui.onAgentClick();
+  ui.changeObjective('weakest');
+  reply(requests[0], {objective: 'score'});
+  await run;
+  assert.equal(ui.state.optimization, null);
+  assert.equal(ui.state.lastSimulate, preview);
+  assert.equal(el('analysis-result').innerHTML, 'Current valid analysis');
+  assert.equal(el('strategies-panel').hidden, true);
+  assert.equal(el('btn-agent').disabled, false);
+});
+
+test('previewing an alternative keeps the original plan, shows costs, and applies that alternative', () => {
+  const { ui, base, el, requests } = harness();
+  const response = strategyResponse(ui, base);
+  const original = JSON.stringify(ui.state.slots);
+  const originalDecisions = ui.state.slots.map((s) => ({measure_id:s.measureId,district_id:s.districtId || null}));
+  ui.renderAgentResult(response, originalDecisions, 0);
+  assert.ok(el('strategy-coincidence').textContent.includes('Совпали планы'));
+  ui.selectStrategy('weakest');
+  assert.equal(JSON.stringify(ui.state.slots), original);
+  assert.equal(requests.length, 0);
+  assert.ok(el('agent-result').innerHTML.includes('Score ниже вашего плана'));
+  assert.ok(el('agent-result').innerHTML.includes('Критических значений станет больше'));
+  assert.ok(el('agent-result').innerHTML.includes('Детерминированный поиск'));
+  el('btn-apply').handlers.click();
+  assert.equal(ui.state.slots[0].measureId, 'M4');
+  assert.equal(ui.state.objective, 'weakest');
+  assert.equal(JSON.stringify(ui.state.undo[0]), original);
+  assert.equal(el('strategies-panel').hidden, true);
+});
+
+test('a stale apply callback cannot apply a strategy from a previous goal', () => {
+  const { ui, base, el } = harness();
+  const response = strategyResponse(ui, base);
+  const original = JSON.stringify(ui.state.slots);
+  ui.renderAgentResult(response, ui.state.slots.map((s) => ({measure_id:s.measureId,district_id:s.districtId || null})), 0);
+  const staleApply = el('btn-apply').handlers.click;
+  ui.changeObjective('critical');
+  staleApply();
+  assert.equal(JSON.stringify(ui.state.slots), original);
+  assert.equal(ui.state.objective, 'critical');
+});
+
+test('an old goal request cannot clear the busy state of a new goal request', async () => {
+  const { ui, requests, reply, el } = harness();
+  const first = ui.onAgentClick();
+  ui.changeObjective('weakest');
+  const second = ui.onAgentClick();
+  reply(requests[0], {objective:'score'});
+  await first;
+  assert.equal(el('btn-agent').disabled, true);
+  assert.equal(ui.state.busy.agent, ui.state.revision);
+  requests[1].reject(new Error('offline'));
+  await second;
+  assert.equal(el('btn-agent').disabled, false);
 });

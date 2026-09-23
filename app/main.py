@@ -113,7 +113,7 @@ def api_optimize(body: OptimizeRequest) -> dict[str, Any]:
             "message": "Закреплять можно только уникальные решения текущего сценария вместе с их районом.",
             "detail": {},
         }])
-    return agent.optimize(decisions, data, locked_decisions=locked)
+    return agent.optimize(decisions, data, locked_decisions=locked, objective=body.objective)
 
 
 @app.get("/api/leaderboard")

@@ -54,7 +54,7 @@ def _decision_dicts(decisions: list[Decision]) -> list[dict]:
     return [{"measure_id": d.measure_id, "district_id": d.district_id} for d in decisions]
 
 
-def _handler_simulate(inp: dict, data: AppData, locked_decisions: list[Decision] | None = None) -> dict:
+def _handler_simulate(inp: dict, data: AppData, locked_decisions: list[Decision] | None = None, objective: optimizer.Objective = "score") -> dict:
     raw_decisions = inp.get("decisions") or []
     candidate = _parse_decisions(raw_decisions)
     errors = engine.validate(candidate, data)
@@ -64,7 +64,10 @@ def _handler_simulate(inp: dict, data: AppData, locked_decisions: list[Decision]
         return {
             "valid": False,
             "score": None,
+            "d_min": None,
             "n_crit": None,
+            "objective": objective,
+            "objective_values": None,
             "total_cost": None,
             "errors": [e["code"] for e in errors],
             "weakest_district": None,
@@ -73,8 +76,11 @@ def _handler_simulate(inp: dict, data: AppData, locked_decisions: list[Decision]
     result = engine.simulate(candidate, data, _with_contributions=False)
     return {
         "valid": True,
-        "score": round(result["score_after"], 2),
+        "score": result["score_after"],
+        "d_min": result["d_min"],
         "n_crit": result["n_crit"],
+        "objective": objective,
+        "objective_values": optimizer.objective_values(result, objective),
         "total_cost": result["total_cost"],
         "errors": [],
         "weakest_district": result["weakest_district_id"],
@@ -116,8 +122,12 @@ def _handler_get_district(inp: dict, data: AppData) -> dict:
     }
 
 
-def _build_agent_user(decisions: list[Decision], result: dict[str, Any], data: AppData) -> str:
+def _build_agent_user(decisions: list[Decision], result: dict[str, Any], data: AppData, objective: optimizer.Objective = "score", locked_decisions: list[Decision] | None = None) -> str:
     payload = {
+        "objective": objective,
+        "objective_description": optimizer.OBJECTIVES[objective]["description"],
+        "objective_values": optimizer.objective_values(result, objective),
+        "locked_decisions": _decision_dicts(locked_decisions or []),
         "current_decisions": [
             {
                 "measure_id": d.measure_id,
@@ -129,13 +139,14 @@ def _build_agent_user(decisions: list[Decision], result: dict[str, Any], data: A
             for d in decisions
             if d.measure_id in data.measures_by_id
         ],
-        "score": round(result["score_after"], 2),
+        "score": result["score_after"],
+        "d_min": result["d_min"],
         "n_crit": result["n_crit"],
         "critical": [
             {
                 "district_name": data.districts_by_id[c["district_id"]]["name"],
                 "indicator_name": data.indicator_name[c["indicator"]],
-                "value": round(c["value"], 2),
+                "value": c["value"],
             }
             for c in result["critical"]
         ],
@@ -158,6 +169,9 @@ def _hypotheses_from_trace(trace: list[dict]) -> list[dict]:
             "idea": t["input"].get("idea", ""),
             "decisions": t["input"].get("decisions", []),
             "score": output.get("score"),
+            "d_min": output.get("d_min"),
+            "n_crit": output.get("n_crit"),
+            "objective": output.get("objective"),
             "valid": valid,
             "error": None if valid else (output.get("errors") or [None])[0],
         })
@@ -177,40 +191,57 @@ def _baseline_hypotheses(steps: list[dict], data: AppData) -> list[dict]:
             "idea": idea,
             "decisions": step["to"],
             "score": round(step["score"], 2),
+            "d_min": round(step["d_min"], 2),
+            "n_crit": step["n_crit"],
             "valid": True,
             "error": None,
         })
     return out
 
 
-def _explain_baseline(steps: list[dict], original_score: float, best_score: float, data: AppData) -> str:
-    if not steps:
-        return "Улучшение не найдено: соседние допустимые варианты не дают прироста Score."
-    parts = []
-    for step in steps:
-        removed = [d for d in step["from"] if d not in step["to"]]
-        added = [d for d in step["to"] if d not in step["from"]]
-        if removed and added:
-            parts.append(f"{_decision_label(removed[0], data)} заменена на {_decision_label(added[0], data)}")
-    delta = best_score - original_score
-    joined = "; ".join(parts) if parts else "набор скорректирован"
-    sign = "+" if delta >= 0 else ""
-    return f"Метод hill_climb нашёл улучшение: {joined}. Score вырос с {original_score:.2f} до {best_score:.2f} ({sign}{delta:.2f})."
+def _explain_strategy(original_decisions: list[Decision], decisions: list[Decision], original: dict, result: dict, data: AppData, objective: optimizer.Objective, source: str) -> str:
+    """Only report engine-verified metric changes, including an intentional Score loss."""
+    label = optimizer.OBJECTIVES[objective]["label"]
+    improved = optimizer.compare_results(result, original, objective) > 0
+    status = "Найдено улучшение по выбранной цели." if improved else "Улучшение по выбранной цели в проверенных вариантах не найдено."
+    delta = result["score_after"] - original["score_after"]
+    score_verb = "снизился" if delta < -optimizer.COMPARISON_TOLERANCE else "вырос" if delta > optimizer.COMPARISON_TOLERANCE else "не изменился"
+    parts = [
+        f"Цель «{label}». {status}",
+        f"Минимальный балл районов: {original['d_min']:.2f} → {result['d_min']:.2f}; критических показателей: {original['n_crit']} → {result['n_crit']}.",
+        f"Score {score_verb}: {original['score_after']:.2f} → {result['score_after']:.2f} ({delta:+.2f}).",
+    ]
+    if objective != "score" and delta < -optimizer.COMPARISON_TOLERANCE:
+        parts.append("Это компромисс: приоритет выбранной цели выше общего Score.")
+    removed = [d for d in original_decisions if d not in decisions]
+    added = [d for d in decisions if d not in original_decisions]
+    if removed:
+        parts.append("Убраны: " + ", ".join(_decision_label(d, data) for d in _decision_dicts(removed)) + ".")
+    if added:
+        parts.append("Добавлены: " + ", ".join(_decision_label(d, data) for d in _decision_dicts(added)) + ".")
+    if source == "baseline":
+        parts.append("Детерминированный поиск проверяет одиночные замены до пяти шагов; глобальный оптимум не гарантирован.")
+    else:
+        parts.append("Предложение AI проверено движком по выбранной цели и закреплённым решениям.")
+    return " ".join(parts)
 
 
-def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list[Decision] | None = None) -> dict[str, Any]:
+def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list[Decision] | None = None, objective: optimizer.Objective = "score") -> dict[str, Any]:
     locked_decisions = locked_decisions or []
     original_result = engine.simulate(decisions, data, _with_contributions=False)
     original_score = original_result["score_after"]
-
-    baseline = optimizer.hill_climb(decisions, data, locked_decisions=locked_decisions)
+    optimizer.objective_values(original_result, objective)
+    baselines = {
+        goal: optimizer.hill_climb(decisions, data, locked_decisions=locked_decisions, objective=goal)
+        for goal in optimizer.OBJECTIVES
+    }
+    baseline = baselines[objective]
     baseline_score = baseline["score"]
     baseline_decisions = baseline["decisions"]
     baseline_hyp = _baseline_hypotheses(baseline["steps"], data)
 
     agent_decisions: list[Decision] | None = None
-    agent_score: float | None = None
-    agent_explanation: str | None = None
+    agent_result: dict | None = None
     agent_hyp: list[dict] = []
     ai_mode = "fallback"
 
@@ -218,10 +249,9 @@ def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list
         if len(locked_decisions) == len(decisions):
             raise _BadAgent("all decisions are locked; no search needed")
         max_calls = int(os.environ.get("AGENT_MAX_TOOL_CALLS", "8"))
-        user = _build_agent_user(decisions, original_result, data)
-        user += "\nЗакреплённые решения (сохрани меру И район): " + json.dumps(_decision_dicts(locked_decisions), ensure_ascii=False)
+        user = _build_agent_user(decisions, original_result, data, objective, locked_decisions)
         handlers = {
-            "simulate": lambda inp: _handler_simulate(inp, data, locked_decisions),
+            "simulate": lambda inp: _handler_simulate(inp, data, locked_decisions, objective),
             "list_measures": lambda inp: _handler_list_measures(inp, data),
             "get_district": lambda inp: _handler_get_district(inp, data),
         }
@@ -232,55 +262,68 @@ def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list
             raise _BadAgent("agent decisions failed validation")
         if not set(locked_decisions).issubset(candidate):
             raise _BadAgent("agent changed a locked decision")
-        explanation = parsed.explanation
-
         agent_result = engine.simulate(candidate, data, _with_contributions=False)
         agent_decisions = candidate
-        agent_score = agent_result["score_after"]
-        agent_explanation = explanation
         agent_hyp = _hypotheses_from_trace(trace)
         ai_mode = "llm"
     except (llm.LLMUnavailable, _BadAgent, ValueError, KeyError, TypeError) as e:
         logger.warning("agent LLM path fell back to hill_climb: %s", e)
         agent_decisions = None
-        agent_score = None
+        agent_result = None
         ai_mode = "fallback"
 
-    if agent_decisions is not None and agent_score is not None and (baseline_score is None or agent_score >= baseline_score - 1e-9):
+    if agent_decisions is not None and agent_result is not None and optimizer.compare_results(agent_result, baseline["result"], objective) >= 0:
         source = "agent"
         best_decisions = agent_decisions
-        best_score = agent_score
-        explanation = agent_explanation or ""
+        best_result = agent_result
         hypotheses = agent_hyp or baseline_hyp
     else:
         source = "baseline"
         best_decisions = baseline_decisions
-        best_score = baseline_score if baseline_score is not None else original_score
-        explanation = _explain_baseline(baseline["steps"], original_score, best_score, data)
+        best_result = baseline["result"]
         hypotheses = (agent_hyp + baseline_hyp) if agent_hyp else baseline_hyp
 
-    if best_score is None or best_score < original_score - 1e-9:
+    if optimizer.compare_results(best_result, original_result, objective) < 0:
+        source = "baseline"
         best_decisions = decisions
-        best_score = original_score
-        delta = 0.0
-        explanation = "Улучшение не найдено, возвращён исходный набор."
-    else:
-        delta = best_score - original_score
+        best_result = original_result
+
+    best_score = best_result["score_after"]
+    delta = best_score - original_score
+    explanation = _explain_strategy(decisions, best_decisions, original_result, best_result, data, objective, source)
 
     if len(locked_decisions) == len(decisions):
         explanation = "Все пять решений закреплены. Снимите закрепление хотя бы с одного, чтобы искать улучшение."
 
+    strategies = []
+    for goal, details in optimizer.OBJECTIVES.items():
+        selected = goal == objective
+        strategy_decisions = best_decisions if selected else baselines[goal]["decisions"]
+        strategy_source = source if selected else "baseline"
+        result = engine.simulate(strategy_decisions, data)
+        strategies.append({
+            "objective": goal,
+            **details,
+            "decisions": _decision_dicts(strategy_decisions),
+            "result": engine.round_result(result),
+            "source": strategy_source,
+            "explanation": explanation if selected else _explain_strategy(decisions, strategy_decisions, original_result, result, data, goal, strategy_source),
+        })
+    selected_strategy = next(s for s in strategies if s["objective"] == objective)
+
     return {
+        "objective": objective,
+        "strategies": strategies,
         "original_score": round(original_score, 2),
         "best_decisions": _decision_dicts(best_decisions),
         "best_score": round(best_score, 2),
         "delta": round(delta, 2),
         "explanation": explanation,
         "hypotheses": hypotheses,
-        "baseline": {"method": "hill_climb", "score": round(baseline_score, 2) if baseline_score is not None else None},
+        "baseline": {"method": "hill_climb", "score": round(baseline_score, 2), "objective": objective},
         "source": source,
         "ai_mode": ai_mode,
         "locked_decisions": _decision_dicts(locked_decisions),
         "original_result": engine.round_result(engine.simulate(decisions, data)),
-        "best_result": engine.round_result(engine.simulate(best_decisions, data)),
+        "best_result": selected_strategy["result"],
     }

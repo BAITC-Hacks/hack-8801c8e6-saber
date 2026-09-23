@@ -69,6 +69,15 @@
       <div class="panel"><h2>Из чего складывается Score</h2><div id="score-breakdown"></div>
         <p class="chart-caption">70% среднего по городу + 30% слабейшего района − штрафы за показатели ниже 40. Компоненты округлены независимо.</p>
       </div>
+      <section id="strategies-panel" class="panel" hidden aria-label="Сравнение стратегий">
+        <span class="eyebrow">ОДИН БЮДЖЕТ · РАЗНЫЕ ПРИОРИТЕТЫ</span>
+        <h2>Три стратегии для города</h2>
+        <p class="muted">Выберите стратегию для подробного разбора. Ваш план изменится только после применения.</p>
+        <div id="strategy-options" class="strategy-options" role="group" aria-label="Просмотр стратегии"></div>
+        <div id="strategies-comparison"></div>
+        <p id="strategy-coincidence" class="muted"></p>
+        <p id="strategy-search-note" class="chart-caption"></p>
+      </section>
     </section>
 
     <aside id="right-column" class="column">
@@ -84,7 +93,14 @@
       <div class="panel" id="agent-panel">
         <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Агент</h2>
         <p id="lock-summary" class="muted">Закреплённых решений нет.</p>
-        <button id="btn-agent" class="btn btn-secondary btn-block" disabled>Найти улучшение</button>
+        <label class="objective-label" for="objective-select">Цель советника</label>
+        <select id="objective-select" class="objective-select" aria-describedby="objective-help">
+          <option value="score">Максимальный Score</option>
+          <option value="weakest">Поддержка слабейшего района</option>
+          <option value="critical">Меньше критических показателей</option>
+        </select>
+        <p id="objective-help" class="muted"></p>
+        <button id="btn-agent" class="btn btn-secondary btn-block" disabled>Сравнить стратегии</button>
         <div id="agent-result" class="agent-result"></div>
       </div>
 
