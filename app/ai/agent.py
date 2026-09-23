@@ -33,12 +33,17 @@ def _parse_decisions(raw: Any) -> list[Decision]:
 
 
 def _extract_json(text: str) -> dict:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:]
-    return json.loads(text)
+    return llm._json_object(text)
+
+
+def _validated_proposal(payload: dict, data: AppData, locked: list[Decision]) -> list[Decision]:
+    parsed = AgentResponse.model_validate(payload)
+    candidate = [Decision(d.measure_id, d.district_id) for d in parsed.best_decisions]
+    if engine.validate(candidate, data):
+        raise _BadAgent("agent decisions failed validation")
+    if not set(locked).issubset(candidate):
+        raise _BadAgent("agent changed a locked decision")
+    return candidate
 
 
 def _decision_label(d: dict, data: AppData) -> str:
@@ -244,6 +249,7 @@ def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list
     agent_result: dict | None = None
     agent_hyp: list[dict] = []
     ai_mode = "fallback"
+    ai_status = {"code": "not_run", "message": "AI-поиск не запускался."}
 
     try:
         if len(locked_decisions) == len(decisions):
@@ -255,19 +261,18 @@ def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list
             "list_measures": lambda inp: _handler_list_measures(inp, data),
             "get_district": lambda inp: _handler_get_district(inp, data),
         }
-        final_text, trace = llm.run_tools(prompts.AGENT_SYSTEM, user, prompts.AGENT_TOOLS, handlers, max_calls)
-        parsed = AgentResponse.model_validate(_extract_json(final_text))
-        candidate = [Decision(d.measure_id, d.district_id) for d in parsed.best_decisions]
-        if engine.validate(candidate, data):
-            raise _BadAgent("agent decisions failed validation")
-        if not set(locked_decisions).issubset(candidate):
-            raise _BadAgent("agent changed a locked decision")
+        final_text, trace = llm.run_tools(prompts.AGENT_SYSTEM, user, prompts.AGENT_TOOLS, handlers, max_calls, schema=AgentResponse.model_json_schema(), validator=lambda answer: _validated_proposal(answer, data, locked_decisions))
+        candidate = _validated_proposal(_extract_json(final_text), data, locked_decisions)
         agent_result = engine.simulate(candidate, data, _with_contributions=False)
         agent_decisions = candidate
         agent_hyp = _hypotheses_from_trace(trace)
         ai_mode = "llm"
+        ai_status = {"code": "ok", "message": "AI-поиск завершён; предложение проверено движком."}
     except (llm.LLMUnavailable, _BadAgent, ValueError, KeyError, TypeError) as e:
-        logger.warning("agent LLM path fell back to hill_climb: %s", e)
+        ai_status = llm.failure_status(e)
+        if len(locked_decisions) == len(decisions):
+            ai_status = {"code": "all_locked", "message": "Все решения закреплены; AI-поиск не требуется."}
+        logger.warning("agent fallback code=%s stage=%s", ai_status["code"], getattr(e, "stage", "validate_agent"))
         agent_decisions = None
         agent_result = None
         ai_mode = "fallback"
@@ -323,6 +328,7 @@ def optimize(decisions: list[Decision], data: AppData, *, locked_decisions: list
         "baseline": {"method": "hill_climb", "score": round(baseline_score, 2), "objective": objective},
         "source": source,
         "ai_mode": ai_mode,
+        "ai_status": ai_status,
         "locked_decisions": _decision_dicts(locked_decisions),
         "original_result": engine.round_result(engine.simulate(decisions, data)),
         "best_result": selected_strategy["result"],

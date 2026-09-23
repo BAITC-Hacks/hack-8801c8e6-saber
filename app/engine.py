@@ -15,8 +15,9 @@ BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
 DIRECTION_LIMIT = "DIRECTION_LIMIT"
 INCOMPATIBLE = "INCOMPATIBLE"
 
-# Errors that make simulate() impossible to run on the raw decisions.
-BLOCKING_ERRORS = {UNKNOWN_MEASURE, DISTRICT_REQUIRED}
+# Errors that make a meaningful preview impossible. Reject oversized lists
+# before contributions() can do quadratic work on an invalid request.
+BLOCKING_ERRORS = {UNKNOWN_MEASURE, DISTRICT_REQUIRED, INVALID_COUNT}
 
 
 @dataclass(frozen=True)

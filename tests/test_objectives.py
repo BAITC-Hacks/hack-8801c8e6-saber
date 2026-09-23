@@ -126,7 +126,7 @@ def test_agent_arbitration_uses_selected_goal_even_when_score_is_lower(monkeypat
     proposal = selected if proposal_goal == "selected" else score
     calls = []
 
-    def fake_agent(system, user, tools, handlers, max_calls):
+    def fake_agent(system, user, tools, handlers, max_calls, **kwargs):
         payload = json.loads(user)
         calls.append(payload["objective"])
         assert payload["objective"] == objective
@@ -158,7 +158,7 @@ def test_all_goals_reject_agent_changes_to_locked_district(monkeypatch, objectiv
     proposal = copy.deepcopy(EXAMPLE)
     proposal[-1]["district_id"] = "nura"
 
-    def fake_agent(system, user, tools, handlers, max_calls):
+    def fake_agent(system, user, tools, handlers, max_calls, **kwargs):
         payload = json.loads(user)
         assert payload["locked_decisions"] == EXAMPLE[-1:]
         result = handlers["simulate"]({"decisions": proposal})
@@ -175,7 +175,7 @@ def test_all_goals_reject_agent_changes_to_locked_district(monkeypatch, objectiv
 
 @pytest.mark.parametrize("objective", ["score", "weakest", "critical"])
 def test_malformed_llm_reply_keeps_three_safe_baselines(monkeypatch, objective):
-    monkeypatch.setattr(agent.llm, "run_tools", lambda *args: ("{broken", []))
+    monkeypatch.setattr(agent.llm, "run_tools", lambda *args, **kwargs: ("{broken", []))
     body = agent.optimize(DECISIONS, data, objective=objective)
     assert body["ai_mode"] == "fallback"
     assert body["objective"] == objective
@@ -184,7 +184,7 @@ def test_malformed_llm_reply_keeps_three_safe_baselines(monkeypatch, objective):
 
 
 def test_all_locks_skip_llm_and_preserve_every_strategy(monkeypatch):
-    def unexpected_call(*args):
+    def unexpected_call(*args, **kwargs):
         pytest.fail("No LLM call is needed for a fully locked scenario")
 
     monkeypatch.setattr(agent.llm, "run_tools", unexpected_call)

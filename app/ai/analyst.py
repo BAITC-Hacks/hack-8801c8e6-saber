@@ -205,24 +205,36 @@ def _fallback(decisions: list[Decision], result: dict[str, Any], data: AppData) 
 def analyze(decisions: list[Decision], result: dict[str, Any], data: AppData) -> dict[str, Any]:
     payload = _build_payload(decisions, result, data)
     user = json.dumps(payload, ensure_ascii=False)
+    schema = AnalysisResponse.model_json_schema()
+    schema["properties"]["weakest_district"]["enum"] = [
+        district["id"] for district in result["districts"]
+        if abs(district["d_after"] - result["d_min"]) <= 1e-9
+    ]
 
     response = None
+    ai_status = None
     for _ in range(2):
         try:
-            candidate = llm.complete_json(prompts.ANALYST_SYSTEM, user)
+            candidate = llm.complete_json(prompts.ANALYST_SYSTEM, user, schema=schema, validator=lambda answer: _validate(answer, data, result))
             response = _validate(candidate, data, result)
             break
         except (llm.LLMUnavailable, _BadAnalysis) as e:
-            logger.warning("analyst LLM attempt failed, retrying/falling back: %s", e)
+            ai_status = llm.failure_status(e)
+            reason = str(e) if isinstance(e, _BadAnalysis) else "provider"
+            logger.warning("analyst fallback code=%s stage=%s reason=%s", ai_status["code"], getattr(e, "stage", "validate_analysis"), reason)
             response = None
+            if isinstance(e, llm.LLMUnavailable) and e.code not in ("invalid_json", "invalid_response"):
+                break  # Network/auth/refusal failures do not need a paid format retry.
             user = json.dumps(payload, ensure_ascii=False) + "\nВерни полный JSON нужной структуры: списки строк, непустые тексты и weakest_district из расчёта."
             continue
 
     if response is not None:
         response = {k: response[k] for k in REQUIRED_FIELDS}
         response["ai_mode"] = "llm"
+        response["ai_status"] = {"code": "ok", "message": "AI-анализ проверен по структуре и слабейшему району."}
         return response
 
     fallback = _fallback(decisions, result, data)
     fallback["ai_mode"] = "fallback"
+    fallback["ai_status"] = ai_status
     return fallback

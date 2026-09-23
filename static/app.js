@@ -27,6 +27,7 @@
     indicatorView: "D",
     selectedTileId: null,
     leaderboard: [],
+    leaderboardRequest: 0,
     revision: 0,
     pending: false,
     previewError: false,
@@ -119,25 +120,47 @@
   }
 
   async function api(path, method, body, signal) {
-    const res = await fetch(path, {
-      method: method || "GET",
-      headers: body ? { "Content-Type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      signal,
-    });
-    let json;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    const timeoutMs = path === "/api/scenario" || path === "/api/optimize" ? 120000 : 10000;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
-      json = await res.json();
-    } catch (e) {
-      throw new Error("Некорректный ответ сервера");
+      const res = await fetch(path, {
+        method: method || "GET",
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      let json;
+      try {
+        json = await res.json();
+      } catch {
+        throw new Error("Некорректный ответ сервера");
+      }
+      if (!res.ok) {
+        const err = new Error("Ошибка запроса");
+        err.status = res.status;
+        err.body = json;
+        throw err;
+      }
+      return json;
+    } catch (error) {
+      if (timedOut) {
+        const timeout = new Error("Сервер не ответил вовремя");
+        timeout.name = "TimeoutError";
+        throw timeout;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
     }
-    if (!res.ok) {
-      const err = new Error("Ошибка запроса");
-      err.status = res.status;
-      err.body = json;
-      throw err;
-    }
-    return json;
   }
 
   // ---------- Availability / rule checks (mirrors app/engine.py rules) ----------
@@ -616,11 +639,12 @@
       .join("");
   }
 
-  function renderAnalysis(analysis, aiMode) {
+  function renderAnalysis(analysis, aiMode, aiStatus) {
     const box = el("analysis-result");
     const list = (arr) => (arr || []).map((x) => `<li>${esc(x)}</li>`).join("");
     box.innerHTML = `
       <span class="badge ${aiMode === "fallback" ? "badge-fallback" : ""}">${aiMode === "fallback" ? "Шаблонный анализ · без LLM" : "AI-анализ · расчёт проверен движком"}</span>
+      ${aiMode === "fallback" && typeof aiStatus?.message === "string" ? `<p class="muted">${esc(aiStatus.message)}</p>` : ""}
       <section><h3>Итог</h3><p>${esc(analysis.summary)}</p></section>
       <section><h3>Сильные стороны</h3><ul>${list(analysis.strengths)}</ul></section>
       <section><h3>Риски</h3><ul>${list(analysis.risks)}</ul></section>
@@ -644,11 +668,14 @@
       renderTiles();
       renderContributionsChart();
       renderSynergyBadges();
-      renderAnalysis(body.analysis, body.ai_mode);
-      await refreshLeaderboard();
+      renderAnalysis(body.analysis, body.ai_mode, body.ai_status);
+      // The saved analysis is ready; a secondary read must not block the plan.
+      void refreshLeaderboard();
     } catch (e) {
       if (revision !== state.revision) return;
-      el("analysis-result").innerHTML = `<p class="error-text">Не удалось получить ответ, попробуйте ещё раз.</p>`;
+      const message = e.name === "TimeoutError" ? "Сервер не ответил вовремя. Сохранение могло завершиться — проверьте таблицу лидеров перед повторной отправкой." : "Не удалось получить ответ. Если запрос уже дошёл до сервера, сценарий мог сохраниться — проверьте таблицу лидеров перед повторной отправкой.";
+      el("analysis-result").innerHTML = `<p class="error-text">${message}</p>`;
+      void refreshLeaderboard();
     } finally {
       if (state.busy.calc === revision) delete state.busy.calc;
       renderCalcButton();
@@ -705,7 +732,8 @@
     const identical = [...groups.values()].filter((names) => names.length > 1);
     el("strategy-coincidence").textContent = identical.length ? `Совпали планы: ${identical.map((names) => names.map((n) => `«${n}»`).join(" и ")).join("; ")}. Разные цели могут приводить к одному набору решений.` : "Каждая цель привела к своему набору решений.";
     const requestedLabel = OBJECTIVES[body.objective || "score"].label;
-    el("strategy-search-note").textContent = `${body.ai_mode === "llm" ? `AI участвовал в поиске для цели «${requestedLabel}».` : "Сравнение рассчитано без LLM."} Все три стратегии проверены движком. Поиск локальный: глобальный оптимум не гарантирован. Суммы и баллы округлены.`;
+    const fallbackReason = body.ai_mode === "fallback" && typeof body.ai_status?.message === "string" ? ` ${body.ai_status.message}` : "";
+    el("strategy-search-note").textContent = `${body.ai_mode === "llm" ? `AI участвовал в поиске для цели «${requestedLabel}».` : "Сравнение рассчитано без LLM."}${fallbackReason} Все три стратегии проверены движком. Поиск локальный: глобальный оптимум не гарантирован. Суммы и баллы округлены.`;
     renderStrategyDetail(body, originalDecisions, revision, epoch, selected);
   }
 
@@ -784,7 +812,8 @@
       renderAgentResult(body, decisions, revision, epoch);
     } catch (e) {
       if (revision !== state.revision || epoch !== state.optimizationEpoch) return;
-      el("agent-result").innerHTML = `<p class="error-text">Не удалось получить ответ, попробуйте ещё раз.</p>`;
+      const message = e.name === "TimeoutError" ? "Сервер не ответил вовремя. План сохранён в браузере — сравнение можно запустить ещё раз." : "Не удалось получить ответ, попробуйте ещё раз.";
+      el("agent-result").innerHTML = `<p class="error-text">${message}</p>`;
     } finally {
       if (state.busy.agent === revision && epoch === state.optimizationEpoch) delete state.busy.agent;
       renderCalcButton();
@@ -792,8 +821,10 @@
   }
 
   async function refreshLeaderboard() {
+    const request = ++state.leaderboardRequest;
     try {
       const body = await api("/api/leaderboard");
+      if (request !== state.leaderboardRequest) return;
       state.leaderboard = body.leaderboard;
       renderLeaderboard();
     } catch (e) {

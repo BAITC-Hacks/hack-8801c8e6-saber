@@ -82,6 +82,7 @@ def api_scenario(body: ScenarioRequest) -> dict[str, Any]:
     raw_result = engine.simulate(decisions, data)
     analysis = analyst.analyze(decisions, raw_result, data)
     ai_mode = analysis.pop("ai_mode")
+    ai_status = analysis.pop("ai_status", None)
 
     rounded_result = engine.round_result(raw_result)
     scenario_id = storage.save_scenario(
@@ -96,6 +97,7 @@ def api_scenario(body: ScenarioRequest) -> dict[str, Any]:
         "result": rounded_result,
         "analysis": analysis,
         "ai_mode": ai_mode,
+        "ai_status": ai_status,
     }
 
 

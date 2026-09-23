@@ -12,7 +12,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function harness() {
+function harness({ respectAbort = false } = {}) {
   const elements = new Map();
   function element() {
     return { innerHTML: '', textContent: '', value: 'Test', children: [], disabled: false,
@@ -27,12 +27,24 @@ function harness() {
   }, createElement: element, addEventListener() {}, body: element() };
   const requests = [];
   const drafts = new Map();
+  const timers = new Map();
+  let timerId = 0;
   const context = vm.createContext({ document, console, AbortController,
-    setTimeout() { return 1; }, clearTimeout() {}, localStorage: { setItem(key, value) { drafts.set(key, value); }, getItem(key) { return drafts.get(key) || null; } },
-    fetch(url, options) { const request = deferred(); requests.push({ url, options, ...request }); return request.promise; },
+    setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, delay}); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    localStorage: { setItem(key, value) { drafts.set(key, value); }, getItem(key) { return drafts.get(key) || null; } },
+    fetch(url, options) {
+      const request = deferred();
+      requests.push({ url, options, ...request });
+      if (respectAbort) {
+        if (options.signal.aborted) request.reject(new Error('aborted'));
+        else options.signal.addEventListener('abort', () => request.reject(new Error('aborted')), {once: true});
+      }
+      return request.promise;
+    },
   });
   let source = fs.readFileSync(path.join(root, 'static/app.js'), 'utf8');
-  source = source.replace(/\}\)\(\);\s*$/, `globalThis.ui = { state, runSimulate, scheduleSimulate, renderCalcButton, renderAnalysis, renderLeaderboard, renderAgentResult, onCalcClick, onAgentClick, applyDecisions, changeObjective, selectStrategy, restoreDraft }; })();`);
+  source = source.replace(/\}\)\(\);\s*$/, `globalThis.ui = { state, runSimulate, scheduleSimulate, renderCalcButton, renderAnalysis, renderLeaderboard, refreshLeaderboard, renderAgentResult, onCalcClick, onAgentClick, applyDecisions, changeObjective, selectStrategy, restoreDraft }; })();`);
   vm.runInContext(source, context);
   const ui = context.ui;
   const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json')));
@@ -48,7 +60,12 @@ function harness() {
     lastSimulate: { result: base, errors: [] },
   });
   const reply = (request, body) => request.resolve({ ok: true, json: async () => body });
-  return { ui, elements, el: document.getElementById, requests, base, reply, drafts };
+  function expireTimers(delay) {
+    for (const [id, timer] of [...timers]) {
+      if (timer.delay === delay) { timers.delete(id); timer.callback(); }
+    }
+  }
+  return { ui, elements, el: document.getElementById, requests, base, reply, drafts, timers, expireTimers };
 }
 
 test('out-of-order previews cannot overwrite a newer scenario', async () => {
@@ -225,4 +242,89 @@ test('an old goal request cannot clear the busy state of a new goal request', as
   requests[1].reject(new Error('offline'));
   await second;
   assert.equal(el('btn-agent').disabled, false);
+});
+
+test('a stalled preview times out, clears its timer, and offers recovery', async () => {
+  const { ui, requests, el, timers, expireTimers } = harness({respectAbort: true});
+  ui.scheduleSimulate();
+  const run = ui.runSimulate();
+  expireTimers(10000);
+  await run;
+  assert.equal(requests[0].options.signal.aborted, true);
+  assert.equal(ui.state.pending, false);
+  assert.equal(ui.state.previewError, true);
+  assert.equal(el('btn-calc').disabled, true);
+  assert.equal(el('btn-retry').hidden, false);
+  assert.equal([...timers.values()].some((timer) => timer.delay === 10000), false);
+});
+
+test('a stalled optimization releases actions without changing the plan or retrying automatically', async () => {
+  const { ui, requests, el, timers, expireTimers } = harness({respectAbort: true});
+  const original = JSON.stringify(ui.state.slots);
+  const run = ui.onAgentClick();
+  expireTimers(120000);
+  await run;
+  assert.equal(JSON.stringify(ui.state.slots), original);
+  assert.equal(requests.length, 1);
+  assert.equal(el('btn-agent').disabled, false);
+  assert.equal(el('btn-calc').disabled, false);
+  assert.ok(el('agent-result').innerHTML.includes('не ответил вовремя'));
+  assert.equal(timers.size, 0);
+});
+
+test('a scenario timeout checks the leaderboard and warns about uncertain saving without resubmitting', async () => {
+  const { ui, requests, el, expireTimers } = harness({respectAbort: true});
+  const run = ui.onCalcClick();
+  expireTimers(120000);
+  await run;
+  assert.deepEqual(requests.map((request) => request.url), ['/api/scenario', '/api/leaderboard']);
+  assert.ok(el('analysis-result').innerHTML.includes('Сохранение могло завершиться'));
+  assert.equal(el('btn-calc').disabled, false);
+  expireTimers(10000);
+});
+
+test('a completed analysis is usable while the secondary leaderboard request is stalled', async () => {
+  const { ui, requests, el, base, reply, expireTimers } = harness({respectAbort: true});
+  const run = ui.onCalcClick();
+  reply(requests[0], {result: base, ai_mode: 'fallback', analysis: {summary: 'Saved analysis'}});
+  await run;
+  assert.equal(requests[1].url, '/api/leaderboard');
+  assert.ok(el('analysis-result').innerHTML.includes('Saved analysis'));
+  assert.equal(el('btn-calc').disabled, false);
+  assert.equal(el('btn-agent').disabled, false);
+  expireTimers(10000);
+});
+
+test('an older leaderboard response cannot overwrite a newer refresh', async () => {
+  const { ui, requests, reply } = harness();
+  const first = ui.refreshLeaderboard();
+  const second = ui.refreshLeaderboard();
+  const row = {rank: 1, team: 'New result', score: 1, total_cost: 1, created_at: '2026-09-23', decisions: []};
+  reply(requests[1], {leaderboard: [row]});
+  await second;
+  reply(requests[0], {leaderboard: []});
+  await first;
+  assert.equal(ui.state.leaderboard[0].team, 'New result');
+});
+
+test('superseded requests abort and clean up their timeout without changing current status', async () => {
+  const { ui, el, timers } = harness({respectAbort: true});
+  const run = ui.runSimulate();
+  ui.scheduleSimulate();
+  await run;
+  assert.equal(ui.state.pending, true);
+  assert.equal(ui.state.previewError, false);
+  assert.ok(el('app-status').textContent.includes('Проверяем'));
+  assert.equal([...timers.values()].some((timer) => timer.delay === 10000), false);
+});
+
+test('fallback reasons are shown as safe text in analysis and strategy comparison', () => {
+  const { ui, el, base } = harness();
+  const payload = '<img src=x onerror=alert(1)>';
+  ui.renderAnalysis({summary: 'Fallback'}, 'fallback', {code: 'timeout', message: payload});
+  assert.ok(el('analysis-result').innerHTML.includes('&lt;img'));
+  assert.ok(!el('analysis-result').innerHTML.includes('<img'));
+  const response = {...strategyResponse(ui, base), ai_mode: 'fallback', ai_status: {code: 'timeout', message: payload}};
+  ui.renderAgentResult(response, ui.state.slots.map((s) => ({measure_id:s.measureId, district_id:s.districtId || null})), 0);
+  assert.ok(el('strategy-search-note').textContent.includes(payload));
 });

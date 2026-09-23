@@ -24,7 +24,7 @@ def client():
 
 
 def test_scenario_falls_back_when_llm_unavailable(client, monkeypatch):
-    def raise_unavailable(system, user):
+    def raise_unavailable(system, user, **kwargs):
         raise llm_module.LLMUnavailable("simulated outage")
 
     monkeypatch.setattr(analyst.llm, "complete_json", raise_unavailable)
@@ -38,7 +38,7 @@ def test_scenario_falls_back_when_llm_unavailable(client, monkeypatch):
 
 
 def test_scenario_falls_back_when_llm_returns_invalid_json(client, monkeypatch):
-    def bad_response(system, user):
+    def bad_response(system, user, **kwargs):
         return {"summary": "неполный ответ"}
 
     monkeypatch.setattr(analyst.llm, "complete_json", bad_response)
@@ -52,7 +52,7 @@ def test_scenario_falls_back_when_llm_returns_invalid_json(client, monkeypatch):
 
 
 def test_optimize_falls_back_to_hill_climb_when_agent_breaks_rules(client, monkeypatch):
-    def bad_run_tools(system, user, tools, handlers, max_calls):
+    def bad_run_tools(system, user, tools, handlers, max_calls, **kwargs):
         final = json.dumps({
             "best_decisions": [{"measure_id": "M7", "district_id": "nura"}] * 5,
             "explanation": "Некорректный ответ агента",
